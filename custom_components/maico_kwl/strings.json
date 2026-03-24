@@ -1,0 +1,22 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Maico KWL Lüftungsanlage einrichten",
+        "description": "Verbindungsparameter für die Maico KWL Lüftungsanlage (Modbus TCP)",
+        "data": {
+          "host": "IP-Adresse",
+          "port": "Modbus-Port",
+          "slave": "Modbus-Geräte-ID (Slave)",
+          "scan_interval": "Aktualisierungsintervall (Sekunden)"
+        }
+      }
+    },
+    "error": {
+      "invalid_host": "Ungültige IP-Adresse oder Hostname."
+    },
+    "abort": {
+      "already_configured": "Dieses Gerät ist bereits konfiguriert."
+    }
+  }
+}
