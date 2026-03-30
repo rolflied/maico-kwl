@@ -1,0 +1,22 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up Maico KWL ventilation unit",
+        "description": "Connection parameters for the Maico KWL ventilation unit (Modbus TCP).\n\nThe default Modbus address of the unit is **10**, the default port is **502**.",
+        "data": {
+          "host": "IP address of the ventilation unit",
+          "port": "Modbus TCP port (default: 502)",
+          "slave": "Modbus device ID (default: 10)",
+          "scan_interval": "Update interval in seconds (default: 30)"
+        }
+      }
+    },
+    "error": {
+      "invalid_host": "Invalid IP address or hostname."
+    },
+    "abort": {
+      "already_configured": "This ventilation unit is already configured."
+    }
+  }
+}

@@ -1,6 +1,6 @@
 {
   "domain": "maico_kwl",
-  "name": "Maico KWL Lüftungsanlage",
+  "name": "Maico KWL Ventilation Unit",
   "config_flow": true,
   "documentation": "https://www.maico-ventilatoren.com",
   "requirements": [],
