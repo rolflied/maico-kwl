@@ -1,7 +1,7 @@
 # Maico KWL – Home Assistant Integration
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
-![Version](https://img.shields.io/badge/version-1.0.0-blue)
+![Version](https://img.shields.io/badge/version-0.1.0-blue)
 ![HA Compatible](https://img.shields.io/badge/Home%20Assistant-2024.1+-green)
 
 Unofficial Home Assistant custom integration for the **Maico WS 320 KBET** ventilation unit (controlled residential ventilation) via **Modbus TCP**.
