@@ -1,9 +1,12 @@
 name: Release
 
+# Publishes a GitHub release (and its tag) whenever master carries a
+# manifest version that has no release yet. HACS offers updates from releases.
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - master
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -13,11 +16,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Check that the tag matches the manifest version
-        run: |
-          version=$(jq -r .version custom_components/maico_kwl/manifest.json)
-          test "v$version" = "$GITHUB_REF_NAME" || { echo "manifest has $version, tag is $GITHUB_REF_NAME"; exit 1; }
-      - name: Create release
+      - name: Create release for the manifest version
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
+        run: |
+          tag="v$(jq -r .version custom_components/maico_kwl/manifest.json)"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists"
+            exit 0
+          fi
+          gh release create "$tag" --target "$GITHUB_SHA" --title "$tag" --generate-notes
