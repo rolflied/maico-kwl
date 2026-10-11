@@ -2,6 +2,8 @@ name: Release
 
 # Publishes a GitHub release (and its tag) whenever master carries a
 # manifest version that has no release yet. HACS offers updates from releases.
+# Notes come from .github/release-notes/<tag>.md if present; an existing
+# release gets its notes updated from that file.
 on:
   push:
     branches:
@@ -16,13 +18,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Create release for the manifest version
+      - name: Create or update the release for the manifest version
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="v$(jq -r .version custom_components/maico_kwl/manifest.json)"
+          notes=".github/release-notes/$tag.md"
           if gh release view "$tag" >/dev/null 2>&1; then
-            echo "Release $tag already exists"
-            exit 0
+            if [ -f "$notes" ]; then
+              gh release edit "$tag" --title "$tag" --notes-file "$notes"
+            else
+              echo "Release $tag already exists"
+            fi
+          elif [ -f "$notes" ]; then
+            gh release create "$tag" --target "$GITHUB_SHA" --title "$tag" --notes-file "$notes"
+          else
+            gh release create "$tag" --target "$GITHUB_SHA" --title "$tag" --generate-notes
           fi
-          gh release create "$tag" --target "$GITHUB_SHA" --title "$tag" --generate-notes
