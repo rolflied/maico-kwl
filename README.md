@@ -1,7 +1,7 @@
 # Maico KWL – Home Assistant Integration
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
-![Version](https://img.shields.io/badge/version-0.2.0-blue)
+![Version](https://img.shields.io/badge/version-0.2.1-blue)
 ![HA Compatible](https://img.shields.io/badge/Home%20Assistant-2026.9+-green)
 
 Unofficial Home Assistant custom integration for **Maico WS/WR ventilation units** (controlled
@@ -188,6 +188,12 @@ address. Setup reads a few registers and refuses devices whose values do not mat
 - New: fan entity, fault/notice decoding, repair issues, filter binary sensors, EnOcean and ZP1
   registers, operating hours 860–869, heat recovery power, clock sync, bus input feeding, options
   and reconfigure flows, diagnostics.
+
+## Icon
+
+The integration ships its own icon (`custom_components/maico_kwl/brand/`), shown by Home Assistant
+2026.9+ on the integrations page and in HACS. It is a neutral cross-flow heat exchanger symbol, not
+the Maico logo.
 
 ## Development
 
