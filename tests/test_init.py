@@ -23,6 +23,7 @@ from homeassistant.const import CONF_HOST, CONF_PORT, STATE_UNAVAILABLE
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er, issue_registry as ir
+from homeassistant.loader import async_get_integration
 from homeassistant.util import dt as dt_util
 
 
@@ -301,3 +302,9 @@ async def test_busy_block_is_retried(
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=62))
     await hass.async_block_till_done()
     assert hass.states.get("sensor.maico_kwl_supply_fan_speed").state == "1239"
+
+
+async def test_ships_brand_images(hass: HomeAssistant) -> None:
+    """Home Assistant finds the bundled icon."""
+    integration = await async_get_integration(hass, DOMAIN)
+    assert integration.has_branding
