@@ -1,207 +1,198 @@
-"""DataUpdateCoordinator für die Maico KWL Integration."""
+"""DataUpdateCoordinator for the Maico KWL integration."""
+
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 import logging
-from datetime import timedelta
+from typing import TYPE_CHECKING
 
-from pymodbus.client import AsyncModbusTcpClient
-from pymodbus.exceptions import ModbusException
+from modbus_connection import (
+    IllegalDataAddressError,
+    IllegalFunctionError,
+    ModbusError,
+    ModbusUnit,
+)
 
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import CONF_HOST
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN, REGISTER_BLOCKS
+from .const import (
+    CONF_SCAN_INTERVAL,
+    CONF_SLAVE,
+    DEFAULT_NAME,
+    DEFAULT_SCAN_INTERVAL,
+    DEFAULT_SLAVE,
+    DOMAIN,
+    MANUFACTURER,
+)
+from .registers import (
+    FAULT_BITS,
+    NOTICE_BITS,
+    READ_BLOCKS,
+    REG_FAULT,
+    REG_NOTICE,
+    U32,
+    active_bits,
+    identity_problem,
+    read_value,
+)
+
+if TYPE_CHECKING:
+    from .bus import MaicoBusFeeder
 
 _LOGGER = logging.getLogger(__name__)
 
+type MaicoKWLConfigEntry = ConfigEntry[MaicoKWLCoordinator]
 
-def to_int16(value: int) -> int:
-    """Konvertiert einen vorzeichenlosen 16-Bit-Wert in einen vorzeichenbehafteten."""
-    if value > 32767:
-        return value - 65536
-    return value
-
-
-def to_uint16(value: int) -> int:
-    """Konvertiert einen vorzeichenbehafteten Wert in eine vorzeichenlose 16-Bit-Darstellung."""
-    if value < 0:
-        return value & 0xFFFF
-    return value
-
-
-def combine_32bit(high: int, low: int) -> int:
-    """Kombiniert zwei 16-Bit-Register zu einem 32-Bit-Wert."""
-    return (high << 16) | low
+# Notice bits that ask for a filter change, with the filter they name.
+FILTER_DUE_BITS: dict[str, str] = {
+    "device_filter_due": "device",
+    "outdoor_filter_due": "outdoor",
+    "room_filter_due": "room",
+}
 
 
 class MaicoKWLCoordinator(DataUpdateCoordinator[dict[int, int]]):
-    """Koordinator für die Maico KWL Modbus-Kommunikation."""
+    """Polls the unit and writes to it over a shared Modbus connection."""
+
+    config_entry: MaicoKWLConfigEntry
 
     def __init__(
         self,
         hass: HomeAssistant,
-        host: str,
-        port: int,
-        slave: int,
-        scan_interval: int,
+        entry: MaicoKWLConfigEntry,
+        unit: ModbusUnit,
     ) -> None:
-        """Initialisierung des Koordinators."""
-        self.host = host
-        self.port = port
-        self.slave = slave
-        self._client: AsyncModbusTcpClient | None = None
-        # None = noch nicht ermittelt, wird beim ersten verbundenen Aufruf gesetzt
-        self._slave_kwargs: dict | None = None
-
+        """Initialize the coordinator."""
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=timedelta(seconds=scan_interval),
+            config_entry=entry,
+            update_interval=timedelta(
+                seconds=entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+            ),
         )
-
-    async def async_setup(self) -> None:
-        """Erstellt den Modbus-Client (Verbindung beim ersten Update)."""
-        self._client = AsyncModbusTcpClient(
-            host=self.host,
-            port=self.port,
+        self.unit = unit
+        self.unit_id: int = entry.data.get(CONF_SLAVE, DEFAULT_SLAVE)
+        # Blocks the unit rejected with a Modbus exception (not fitted / not in
+        # this firmware). They are not asked for again until the entry reloads.
+        self.unsupported_blocks: set[tuple[int, int]] = set()
+        # When the clock registers were read, to compare them with HA's time.
+        self.last_read: datetime | None = None
+        # Last value written to each write-only bus input (address -> value).
+        self.bus_values: dict[int, float] = {}
+        # Set up in async_setup_entry once the first poll succeeded.
+        self.bus: MaicoBusFeeder
+        self.device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name=DEFAULT_NAME,
+            manufacturer=MANUFACTURER,
+            model="KWL WS/WR",
+            configuration_url=f"http://{entry.data[CONF_HOST]}",
         )
-
-    async def async_shutdown(self) -> None:
-        """Trennt die Modbus-Verbindung."""
-        if self._client:
-            if self._client.connected:
-                await self._client.close()
-            self._client = None
-
-    async def _ensure_connected(self) -> bool:
-        """Stellt sicher, dass der Client verbunden ist."""
-        if not self._client:
-            return False
-        if not self._client.connected:
-            _LOGGER.debug(
-                "Modbus nicht verbunden – versuche Neuverbindung zu %s:%d",
-                self.host,
-                self.port,
-            )
-            return await self._client.connect()
-        return True
-
-    async def _detect_slave_kwargs(self) -> dict:
-        """Ermittelt durch Ausprobieren welchen Kwarg diese pymodbus-Version unterstützt.
-
-        Reihenfolge: slave= → unit= → kein Kwarg
-        TypeError bedeutet: dieser Kwarg-Name ist nicht gültig → nächste Option.
-        Andere Exceptions bedeuten: Kwarg-Name ist akzeptiert, aber Kommunikationsproblem.
-        """
-        for candidate in ({"slave": self.slave}, {"unit": self.slave}, {}):
-            try:
-                await self._client.read_holding_registers(
-                    address=550, count=1, **candidate
-                )
-                # Kein TypeError → dieser Kwarg wird akzeptiert
-                key = next(iter(candidate), None)
-                if key:
-                    _LOGGER.debug("pymodbus: Slave-Kwarg '%s=' erkannt und gecacht", key)
-                else:
-                    _LOGGER.warning(
-                        "pymodbus: weder 'slave' noch 'unit' wird akzeptiert. "
-                        "Slave-ID %d kann nicht per Request übermittelt werden.",
-                        self.slave,
-                    )
-                return candidate
-            except TypeError:
-                key = next(iter(candidate), None)
-                _LOGGER.debug(
-                    "pymodbus: Kwarg '%s=' nicht unterstützt – versuche nächste Option",
-                    key,
-                )
-            except Exception:
-                # Anderer Fehler (Modbus, Netzwerk): Kwarg-Name ist korrekt,
-                # Kommunikationsfehler wird im normalen Update-Zyklus behandelt
-                key = next(iter(candidate), None)
-                if key:
-                    _LOGGER.debug(
-                        "pymodbus: Kwarg '%s=' akzeptiert (Kommunikationsfehler ignoriert)",
-                        key,
-                    )
-                return candidate
-
-        return {}
 
     async def _async_update_data(self) -> dict[int, int]:
-        """Liest alle konfigurierten Modbus-Register aus."""
-        if not self._client:
-            raise UpdateFailed("Kein Modbus-Client verfügbar")
+        """Read all register blocks."""
+        data: dict[int, int] = {}
+        for block in READ_BLOCKS:
+            if block in self.unsupported_blocks:
+                continue
+            start, count = block
+            try:
+                words = await self.unit.read_holding_registers(start, count)
+            except (IllegalDataAddressError, IllegalFunctionError) as err:
+                # The unit answered, but does not have these registers. Other
+                # exceptions (busy, device failure) are temporary.
+                _LOGGER.info(
+                    "Registers %d-%d are not available on this unit (%s), skipping them",
+                    start,
+                    start + count - 1,
+                    err,
+                )
+                self.unsupported_blocks.add(block)
+                continue
+            except ModbusError as err:
+                raise UpdateFailed(
+                    translation_domain=DOMAIN,
+                    translation_key="communication_error",
+                    translation_placeholders={"error": str(err)},
+                ) from err
+            data.update(zip(range(start, start + count), words, strict=False))
 
-        if not await self._ensure_connected():
+        if problem := identity_problem(data):
             raise UpdateFailed(
-                f"Verbindung zu {self.host}:{self.port} fehlgeschlagen"
+                translation_domain=DOMAIN,
+                translation_key="not_maico",
+                translation_placeholders={"problem": problem},
             )
 
-        # Slave-Kwarg beim ersten erfolgreichen Verbindungsaufbau einmalig ermitteln
-        if self._slave_kwargs is None:
-            self._slave_kwargs = await self._detect_slave_kwargs()
-
-        data: dict[int, int] = {}
-
-        try:
-            for start, count in REGISTER_BLOCKS:
-                result = await self._client.read_holding_registers(
-                    address=start,
-                    count=count,
-                    **self._slave_kwargs,
-                )
-                if result.isError():
-                    _LOGGER.warning(
-                        "Fehler beim Lesen der Register %d–%d: %s",
-                        start,
-                        start + count - 1,
-                        result,
-                    )
-                    continue
-
-                for i, value in enumerate(result.registers):
-                    data[start + i] = value
-
-        except ModbusException as err:
-            raise UpdateFailed(f"Modbus-Kommunikationsfehler: {err}") from err
-
+        self.last_read = dt_util.utcnow()
+        self._update_issues(data)
         return data
 
-    async def async_write_register(self, address: int, value: int) -> bool:
-        """Schreibt einen einzelnen Modbus-Register-Wert."""
-        if not self._client:
-            _LOGGER.error("Schreiben nicht möglich – kein Modbus-Client")
-            return False
-
-        if not await self._ensure_connected():
-            _LOGGER.error(
-                "Schreiben nicht möglich – Verbindung zu %s:%d fehlgeschlagen",
-                self.host,
-                self.port,
-            )
-            return False
-
-        # Slave-Kwargs müssen vor dem ersten Schreiben bekannt sein
-        if self._slave_kwargs is None:
-            self._slave_kwargs = await self._detect_slave_kwargs()
-
+    async def async_write(self, address: int, values: list[int]) -> None:
+        """Write registers with FC 16, the only write the unit accepts over TCP."""
         try:
-            result = await self._client.write_register(
-                address=address,
-                value=to_uint16(value),
-                **self._slave_kwargs,
+            await self.unit.write_registers(address, values)
+        except ModbusError as err:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="write_failed",
+                translation_placeholders={"address": str(address), "error": str(err)},
+            ) from err
+        # Show the new value right away, then read back what the unit made of it
+        # (e.g. the current level after a new setpoint).
+        if self.data is not None and address in self.data:
+            new = dict(self.data)
+            new.update(zip(range(address, address + len(values)), values, strict=False))
+            self.async_set_updated_data(new)
+            await self.async_request_refresh()
+
+    async def async_write_register(self, address: int, value: int) -> None:
+        """Write a single register."""
+        await self.async_write(address, [value & 0xFFFF])
+
+    def _update_issues(self, data: dict[int, int]) -> None:
+        """Raise or clear repair issues for faults and due filters."""
+        entry_id = self.config_entry.entry_id
+
+        faults = read_value(data, REG_FAULT, U32)
+        fault_issue = f"fault_{entry_id}"
+        if faults:
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                fault_issue,
+                is_fixable=False,
+                severity=ir.IssueSeverity.ERROR,
+                translation_key="fault_active",
+                translation_placeholders={
+                    "faults": ", ".join(active_bits(int(faults), FAULT_BITS)),
+                    "code": str(faults),
+                },
             )
-            if result.isError():
-                _LOGGER.error(
-                    "Fehler beim Schreiben in Register %d (Wert %d): %s",
-                    address,
-                    value,
-                    result,
+        else:
+            ir.async_delete_issue(self.hass, DOMAIN, fault_issue)
+
+        notices = read_value(data, REG_NOTICE, U32)
+        due = set(active_bits(int(notices), NOTICE_BITS)) if notices is not None else set()
+        for bit, filter_name in FILTER_DUE_BITS.items():
+            issue_id = f"filter_due_{filter_name}_{entry_id}"
+            if bit in due:
+                ir.async_create_issue(
+                    self.hass,
+                    DOMAIN,
+                    issue_id,
+                    is_fixable=False,
+                    severity=ir.IssueSeverity.WARNING,
+                    translation_key=f"{filter_name}_filter_due",
                 )
-                return False
-            return True
-        except ModbusException as err:
-            _LOGGER.error("Modbus-Schreibfehler bei Register %d: %s", address, err)
-            return False
+            else:
+                ir.async_delete_issue(self.hass, DOMAIN, issue_id)

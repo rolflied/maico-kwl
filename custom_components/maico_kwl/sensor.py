@@ -1,7 +1,9 @@
-"""Sensor-Entitäten für die Maico KWL Integration."""
+"""Sensor entities for the Maico KWL integration."""
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -10,545 +12,458 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
-    CONF_HOST,
     PERCENTAGE,
+    REVOLUTIONS_PER_MINUTE,
+    EntityCategory,
+    UnitOfPower,
+    UnitOfRatio,
     UnitOfTemperature,
     UnitOfTime,
     UnitOfVolumeFlowRate,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN, FAN_LEVELS
-from .coordinator import MaicoKWLCoordinator, combine_32bit, to_int16
+from . import registers as r
+from .coordinator import MaicoKWLConfigEntry, MaicoKWLCoordinator
+from .entity import MaicoEntity
 
-CONCENTRATION_PARTS_PER_MILLION = "ppm"
-UNIT_RPM = "U/min"
-UNIT_M3H = "m³/h"
-UNIT_HOURS = "h"
-UNIT_DAYS = "d"
+PARALLEL_UPDATES = 0
+
+type Data = dict[int, int]
 
 
 @dataclass(frozen=True, kw_only=True)
 class MaicoSensorEntityDescription(SensorEntityDescription):
-    """Beschreibung eines Maico KWL Sensors."""
+    """Describes a Maico KWL sensor."""
 
-    register: int = 0
-    scale: float = 1.0
-    signed: bool = False
-    high_register: int | None = None  # Für 32-Bit-Werte (High-Word)
-    value_map: dict[int, str] | None = None  # Mapping von Wert auf Text
+    registers: tuple[int, ...]
+    value_fn: Callable[[MaicoKWLCoordinator], Any]
+    attrs_fn: Callable[[Data], dict[str, Any]] | None = None
+    # Decides from the first poll whether a new entity starts enabled, for
+    # parts that are not fitted to every unit.
+    enabled_fn: Callable[[Data], bool] | None = None
 
 
-SENSOR_DESCRIPTIONS: tuple[MaicoSensorEntityDescription, ...] = (
-    # ── Lüftungsstatus ────────────────────────────────────────────────────────
-    MaicoSensorEntityDescription(
-        key="aktuelle_lueftungsstufe",
-        name="Aktuelle Lüftungsstufe",
-        register=650,
-        icon="mdi:fan",
-        value_map={i: v for i, v in enumerate(FAN_LEVELS)},
-    ),
-    MaicoSensorEntityDescription(
-        key="drehzahl_zuluft",
-        name="Drehzahl Zuluftventilator",
-        register=651,
-        native_unit_of_measurement=UNIT_RPM,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:fan-clock",
-    ),
-    MaicoSensorEntityDescription(
-        key="drehzahl_abluft",
-        name="Drehzahl Abluftventilator",
-        register=652,
-        native_unit_of_measurement=UNIT_RPM,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:fan-clock",
-    ),
-    MaicoSensorEntityDescription(
-        key="volumenstrom_zuluft",
-        name="Volumenstrom Zuluft",
-        register=653,
-        native_unit_of_measurement=UNIT_M3H,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:air-filter",
-    ),
-    MaicoSensorEntityDescription(
-        key="volumenstrom_abluft",
-        name="Volumenstrom Abluft",
-        register=654,
-        native_unit_of_measurement=UNIT_M3H,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:air-filter",
-    ),
-    # ── Filterrestlaufzeiten ─────────────────────────────────────────────────
-    MaicoSensorEntityDescription(
-        key="restlaufzeit_geraetefilter",
-        name="Restlaufzeit Gerätefilter",
-        register=655,
-        native_unit_of_measurement=UNIT_DAYS,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:air-filter",
-    ),
-    MaicoSensorEntityDescription(
-        key="restlaufzeit_aussenfilter",
-        name="Restlaufzeit Außenfilter",
-        register=656,
-        native_unit_of_measurement=UNIT_DAYS,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:air-filter",
-    ),
-    MaicoSensorEntityDescription(
-        key="restlaufzeit_raumfilter",
-        name="Restlaufzeit Raumfilter",
-        register=657,
-        native_unit_of_measurement=UNIT_DAYS,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:air-filter",
-    ),
-    # ── Temperaturen ──────────────────────────────────────────────────────────
-    MaicoSensorEntityDescription(
-        key="temperatur_raum",
-        name="Temperatur Raum",
-        register=700,
-        scale=0.1,
-        signed=True,
+def _value(address: int, codec: r.Codec = r.U16) -> Callable[[MaicoKWLCoordinator], Any]:
+    return lambda c: r.read_value(c.data, address, codec)
+
+
+def _enum(address: int, options: dict[int, str]) -> Callable[[MaicoKWLCoordinator], Any]:
+    return lambda c: options.get(c.data.get(address, -1))
+
+
+def _non_zero(address: int) -> Callable[[Data], bool]:
+    return lambda data: bool(data.get(address))
+
+
+def _temperature(
+    key: str,
+    address: int,
+    *,
+    enabled_fn: Callable[[Data], bool] | None = None,
+    enabled: bool = True,
+) -> MaicoSensorEntityDescription:
+    return MaicoSensorEntityDescription(
+        key=key,
+        translation_key=key,
+        registers=(address,),
+        value_fn=_value(address, r.S16_TENTHS),
         device_class=SensorDeviceClass.TEMPERATURE,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
         state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:thermometer",
+        suggested_display_precision=1,
+        enabled_fn=enabled_fn,
+        entity_registry_enabled_default=enabled,
+    )
+
+
+def _optional_bank(
+    kind: str,
+    start: int,
+    count: int,
+    device_class: SensorDeviceClass,
+    unit: str,
+    *,
+    first: int = 1,
+) -> list[MaicoSensorEntityDescription]:
+    return [
+        MaicoSensorEntityDescription(
+            key=f"{kind}_{i + first}",
+            translation_key=kind,
+            translation_placeholders={"n": str(i + first)},
+            registers=(start + i,),
+            value_fn=_value(start + i),
+            device_class=device_class,
+            native_unit_of_measurement=unit,
+            state_class=SensorStateClass.MEASUREMENT,
+            enabled_fn=_non_zero(start + i),
+        )
+        for i in range(count)
+    ]
+
+
+def _hours(key: str, address: int, enabled: bool = True) -> MaicoSensorEntityDescription:
+    return MaicoSensorEntityDescription(
+        key=key,
+        translation_key=key,
+        registers=(address, address + 1),
+        value_fn=_value(address, r.U32),
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.HOURS,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=enabled,
+    )
+
+
+def _bits(address: int, names: dict[int, str]) -> Callable[[Data], dict[str, Any]]:
+    def attrs(data: Data) -> dict[str, Any]:
+        value = r.read_value(data, address, r.U32)
+        if value is None:
+            return {}
+        return {"active": r.active_bits(int(value), names), "code": int(value)}
+
+    return attrs
+
+
+def _bit_count(address: int) -> Callable[[MaicoKWLCoordinator], Any]:
+    def value(c: MaicoKWLCoordinator) -> int | None:
+        raw = r.read_value(c.data, address, r.U32)
+        return None if raw is None else int(raw).bit_count()
+
+    return value
+
+
+def _temperatures(c: MaicoKWLCoordinator) -> tuple[float, float, float] | None:
+    values = [
+        r.read_value(c.data, address, r.S16_TENTHS)
+        for address in (
+            r.REG_AIR_INTAKE_TEMPERATURE,
+            r.REG_SUPPLY_AIR_TEMPERATURE,
+            r.REG_EXTRACT_AIR_TEMPERATURE,
+        )
+    ]
+    if any(v is None for v in values):
+        return None
+    return values[0], values[1], values[2]  # type: ignore[return-value]
+
+
+def _bypass_open(c: MaicoKWLCoordinator) -> bool:
+    return bool(c.data.get(r.REG_SUMMER_BYPASS))
+
+
+def _efficiency(c: MaicoKWLCoordinator) -> float | None:
+    if (temps := _temperatures(c)) is None or _bypass_open(c):
+        return None
+    return r.heat_recovery_efficiency(*temps)
+
+
+def _recovery_power(c: MaicoKWLCoordinator) -> float | None:
+    temps = _temperatures(c)
+    airflow = r.read_value(c.data, r.REG_SUPPLY_AIRFLOW)
+    if temps is None or airflow is None or _bypass_open(c):
+        return None
+    return r.heat_recovery_power(airflow, temps[0], temps[1])
+
+
+def _clock_deviation(c: MaicoKWLCoordinator) -> int | None:
+    if (clock := r.decode_clock(c.data)) is None or c.last_read is None:
+        return None
+    device = clock.replace(tzinfo=dt_util.get_default_time_zone())
+    return round((device - c.last_read).total_seconds())
+
+
+_FAN_SPEED = {
+    "native_unit_of_measurement": REVOLUTIONS_PER_MINUTE,
+    "state_class": SensorStateClass.MEASUREMENT,
+}
+_AIRFLOW = {
+    "device_class": SensorDeviceClass.VOLUME_FLOW_RATE,
+    "native_unit_of_measurement": UnitOfVolumeFlowRate.CUBIC_METERS_PER_HOUR,
+    "state_class": SensorStateClass.MEASUREMENT,
+}
+_FILTER_DAYS = {
+    "device_class": SensorDeviceClass.DURATION,
+    "native_unit_of_measurement": UnitOfTime.DAYS,
+    "state_class": SensorStateClass.MEASUREMENT,
+}
+_STATE_ENUM = {
+    "device_class": SensorDeviceClass.ENUM,
+    "options": list(r.HEAT_COOL_STATES.values()),
+    "entity_category": EntityCategory.DIAGNOSTIC,
+    "entity_registry_enabled_default": False,
+}
+
+SENSORS: tuple[MaicoSensorEntityDescription, ...] = (
+    # ── Ventilation status ────────────────────────────────────────────────────
+    MaicoSensorEntityDescription(
+        key="current_ventilation_level",
+        translation_key="current_ventilation_level",
+        registers=(r.REG_CURRENT_VENTILATION_LEVEL,),
+        value_fn=_enum(r.REG_CURRENT_VENTILATION_LEVEL, r.VENTILATION_LEVELS),
+        device_class=SensorDeviceClass.ENUM,
+        options=list(r.VENTILATION_LEVELS.values()),
     ),
     MaicoSensorEntityDescription(
-        key="temperatur_raum_extern",
-        name="Temperatur Raum Extern",
-        register=701,
-        scale=0.1,
-        signed=True,
-        device_class=SensorDeviceClass.TEMPERATURE,
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:thermometer",
+        key="supply_fan_speed",
+        translation_key="supply_fan_speed",
+        registers=(r.REG_SUPPLY_FAN_SPEED,),
+        value_fn=_value(r.REG_SUPPLY_FAN_SPEED),
+        **_FAN_SPEED,
     ),
     MaicoSensorEntityDescription(
-        key="temperatur_aul_ewt",
-        name="Temperatur Außenluft vor EWT",
-        register=702,
-        scale=0.1,
-        signed=True,
-        device_class=SensorDeviceClass.TEMPERATURE,
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:thermometer-lines",
+        key="exhaust_fan_speed",
+        translation_key="exhaust_fan_speed",
+        registers=(r.REG_EXHAUST_FAN_SPEED,),
+        value_fn=_value(r.REG_EXHAUST_FAN_SPEED),
+        **_FAN_SPEED,
     ),
     MaicoSensorEntityDescription(
-        key="temperatur_lufteintritt",
-        name="Temperatur Lufteintritt",
-        register=703,
-        scale=0.1,
-        signed=True,
-        device_class=SensorDeviceClass.TEMPERATURE,
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:thermometer-chevron-up",
+        key="supply_airflow",
+        translation_key="supply_airflow",
+        registers=(r.REG_SUPPLY_AIRFLOW,),
+        value_fn=_value(r.REG_SUPPLY_AIRFLOW),
+        **_AIRFLOW,
     ),
     MaicoSensorEntityDescription(
-        key="temperatur_zuluft",
-        name="Temperatur Zuluft",
-        register=704,
-        scale=0.1,
-        signed=True,
-        device_class=SensorDeviceClass.TEMPERATURE,
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:thermometer-chevron-up",
+        key="exhaust_airflow",
+        translation_key="exhaust_airflow",
+        registers=(r.REG_EXHAUST_AIRFLOW,),
+        value_fn=_value(r.REG_EXHAUST_AIRFLOW),
+        **_AIRFLOW,
+    ),
+    # ── Filters ───────────────────────────────────────────────────────────────
+    MaicoSensorEntityDescription(
+        key="device_filter_remaining",
+        translation_key="device_filter_remaining",
+        registers=(r.REG_DEVICE_FILTER_REMAINING,),
+        value_fn=_value(r.REG_DEVICE_FILTER_REMAINING),
+        **_FILTER_DAYS,
+    ),
+    # A filter that is not fitted stays at 0 days.
+    MaicoSensorEntityDescription(
+        key="outdoor_filter_remaining",
+        translation_key="outdoor_filter_remaining",
+        registers=(r.REG_OUTDOOR_FILTER_REMAINING,),
+        value_fn=_value(r.REG_OUTDOOR_FILTER_REMAINING),
+        enabled_fn=_non_zero(r.REG_OUTDOOR_FILTER_REMAINING),
+        **_FILTER_DAYS,
     ),
     MaicoSensorEntityDescription(
-        key="temperatur_abluft",
-        name="Temperatur Abluft",
-        register=705,
-        scale=0.1,
-        signed=True,
-        device_class=SensorDeviceClass.TEMPERATURE,
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:thermometer-chevron-down",
+        key="room_filter_remaining",
+        translation_key="room_filter_remaining",
+        registers=(r.REG_ROOM_FILTER_REMAINING,),
+        value_fn=_value(r.REG_ROOM_FILTER_REMAINING),
+        enabled_fn=_non_zero(r.REG_ROOM_FILTER_REMAINING),
+        **_FILTER_DAYS,
     ),
-    MaicoSensorEntityDescription(
-        key="temperatur_fortluft",
-        name="Temperatur Fortluft",
-        register=706,
-        scale=0.1,
-        signed=True,
-        device_class=SensorDeviceClass.TEMPERATURE,
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:thermometer-chevron-down",
+    # ── Temperatures ──────────────────────────────────────────────────────────
+    _temperature("room_temperature", r.REG_ROOM_TEMPERATURE),
+    _temperature(
+        "external_room_temperature",
+        r.REG_EXTERNAL_ROOM_TEMPERATURE,
+        enabled_fn=lambda d: d.get(r.REG_ROOM_TEMPERATURE_SOURCE) == 1,
     ),
-    # ── Feuchte ───────────────────────────────────────────────────────────────
-    # Rohwert = direkt in % (kein Skalierungsfaktor trotz CSV-Angabe "* 10")
+    _temperature(
+        "outdoor_before_ehx_temperature",
+        r.REG_OUTDOOR_BEFORE_EHX_TEMPERATURE,
+        enabled=False,
+    ),
+    _temperature("air_intake_temperature", r.REG_AIR_INTAKE_TEMPERATURE),
+    _temperature("supply_air_temperature", r.REG_SUPPLY_AIR_TEMPERATURE),
+    _temperature("extract_air_temperature", r.REG_EXTRACT_AIR_TEMPERATURE),
+    _temperature("exhaust_air_temperature", r.REG_EXHAUST_AIR_TEMPERATURE),
+    # ── Air quality ───────────────────────────────────────────────────────────
     MaicoSensorEntityDescription(
-        key="feuchte_abluft",
-        name="Relative Feuchte Abluft",
-        register=750,
+        key="extract_air_humidity",
+        translation_key="extract_air_humidity",
+        registers=(r.REG_EXTRACT_AIR_HUMIDITY,),
+        value_fn=_value(r.REG_EXTRACT_AIR_HUMIDITY),
         device_class=SensorDeviceClass.HUMIDITY,
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:water-percent",
+    ),
+    *_optional_bank(
+        "humidity_sensor",
+        r.REG_HUMIDITY_SENSOR,
+        4,
+        SensorDeviceClass.HUMIDITY,
+        PERCENTAGE,
+        first=1,
+    ),
+    *_optional_bank(
+        "co2_sensor",
+        r.REG_CO2_SENSOR,
+        4,
+        SensorDeviceClass.CO2,
+        UnitOfRatio.PARTS_PER_MILLION,
+        first=1,
+    ),
+    *_optional_bank(
+        "voc_sensor",
+        r.REG_VOC_SENSOR,
+        4,
+        SensorDeviceClass.VOLATILE_ORGANIC_COMPOUNDS_PARTS,
+        UnitOfRatio.PARTS_PER_MILLION,
+        first=1,
+    ),
+    *_optional_bank(
+        "enocean_co2",
+        r.REG_ENOCEAN_CO2,
+        8,
+        SensorDeviceClass.CO2,
+        UnitOfRatio.PARTS_PER_MILLION,
+        first=0,
+    ),
+    *_optional_bank(
+        "enocean_humidity",
+        r.REG_ENOCEAN_HUMIDITY,
+        8,
+        SensorDeviceClass.HUMIDITY,
+        PERCENTAGE,
+        first=0,
+    ),
+    *_optional_bank(
+        "enocean_voc",
+        r.REG_ENOCEAN_VOC,
+        8,
+        SensorDeviceClass.VOLATILE_ORGANIC_COMPOUNDS_PARTS,
+        UnitOfRatio.PARTS_PER_MILLION,
+        first=0,
+    ),
+    # ── Faults and notices ────────────────────────────────────────────────────
+    MaicoSensorEntityDescription(
+        key="faults",
+        translation_key="faults",
+        registers=(r.REG_FAULT, r.REG_FAULT + 1),
+        value_fn=_bit_count(r.REG_FAULT),
+        attrs_fn=_bits(r.REG_FAULT, r.FAULT_BITS),
+        state_class=SensorStateClass.MEASUREMENT,
     ),
     MaicoSensorEntityDescription(
-        key="feuchte_sensor1",
-        name="Relative Feuchte Sensor 1",
-        register=751,
-        device_class=SensorDeviceClass.HUMIDITY,
+        key="notices",
+        translation_key="notices",
+        registers=(r.REG_NOTICE, r.REG_NOTICE + 1),
+        value_fn=_bit_count(r.REG_NOTICE),
+        attrs_fn=_bits(r.REG_NOTICE, r.NOTICE_BITS),
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    # ── ZP1 extension module ──────────────────────────────────────────────────
+    MaicoSensorEntityDescription(
+        key="brine_pump",
+        translation_key="brine_pump",
+        registers=(r.REG_BRINE_PUMP,),
+        value_fn=_enum(r.REG_BRINE_PUMP, r.HEAT_COOL_STATES),
+        **_STATE_ENUM,
+    ),
+    MaicoSensorEntityDescription(
+        key="three_way_damper",
+        translation_key="three_way_damper",
+        registers=(r.REG_THREE_WAY_DAMPER,),
+        value_fn=_enum(r.REG_THREE_WAY_DAMPER, r.HEAT_COOL_STATES),
+        **_STATE_ENUM,
+    ),
+    MaicoSensorEntityDescription(
+        key="zone_damper",
+        translation_key="zone_damper",
+        registers=(r.REG_ZONE_DAMPER,),
+        value_fn=_enum(r.REG_ZONE_DAMPER, r.ZONE_DAMPER_STATES),
+        device_class=SensorDeviceClass.ENUM,
+        options=list(r.ZONE_DAMPER_STATES.values()),
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+    ),
+    # ── Operating hours ───────────────────────────────────────────────────────
+    _hours("operating_hours_humidity_protection", r.REG_HOURS_HUMIDITY_PROTECTION),
+    _hours("operating_hours_reduced", r.REG_HOURS_REDUCED),
+    _hours("operating_hours_nominal", r.REG_HOURS_NOMINAL),
+    _hours("operating_hours_intensive", r.REG_HOURS_INTENSIVE),
+    _hours("operating_hours_total", r.REG_HOURS_TOTAL),
+    _hours("operating_hours_reheating_relay", r.REG_HOURS_REHEATING_RELAY, False),
+    _hours("operating_hours_brine_pump", r.REG_HOURS_BRINE_PUMP, False),
+    _hours("operating_hours_three_way_damper", r.REG_HOURS_THREE_WAY_DAMPER, False),
+    _hours("operating_hours_zone_damper", r.REG_HOURS_ZONE_DAMPER, False),
+    _hours("operating_hours_switch_contact", r.REG_HOURS_SWITCH_CONTACT, False),
+    # ── Calculated ────────────────────────────────────────────────────────────
+    MaicoSensorEntityDescription(
+        key="heat_recovery_efficiency",
+        translation_key="heat_recovery_efficiency",
+        registers=(
+            r.REG_AIR_INTAKE_TEMPERATURE,
+            r.REG_SUPPLY_AIR_TEMPERATURE,
+            r.REG_EXTRACT_AIR_TEMPERATURE,
+        ),
+        value_fn=_efficiency,
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:water-percent",
+        suggested_display_precision=0,
     ),
     MaicoSensorEntityDescription(
-        key="feuchte_sensor2",
-        name="Relative Feuchte Sensor 2",
-        register=752,
-        device_class=SensorDeviceClass.HUMIDITY,
-        native_unit_of_measurement=PERCENTAGE,
+        key="heat_recovery_power",
+        translation_key="heat_recovery_power",
+        registers=(
+            r.REG_AIR_INTAKE_TEMPERATURE,
+            r.REG_SUPPLY_AIR_TEMPERATURE,
+            r.REG_SUPPLY_AIRFLOW,
+        ),
+        value_fn=_recovery_power,
+        device_class=SensorDeviceClass.POWER,
+        native_unit_of_measurement=UnitOfPower.WATT,
         state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:water-percent",
+        suggested_display_precision=0,
     ),
     MaicoSensorEntityDescription(
-        key="feuchte_sensor3",
-        name="Relative Feuchte Sensor 3",
-        register=753,
-        device_class=SensorDeviceClass.HUMIDITY,
-        native_unit_of_measurement=PERCENTAGE,
+        key="clock_deviation",
+        translation_key="clock_deviation",
+        registers=tuple(range(r.REG_CLOCK, r.REG_CLOCK + 6)),
+        value_fn=_clock_deviation,
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
         state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:water-percent",
-    ),
-    MaicoSensorEntityDescription(
-        key="feuchte_sensor4",
-        name="Relative Feuchte Sensor 4",
-        register=754,
-        device_class=SensorDeviceClass.HUMIDITY,
-        native_unit_of_measurement=PERCENTAGE,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:water-percent",
-    ),
-    # ── CO2 ───────────────────────────────────────────────────────────────────
-    # Rohwert = direkt in ppm (kein Skalierungsfaktor trotz CSV-Angabe "* 10")
-    MaicoSensorEntityDescription(
-        key="co2_sensor1",
-        name="CO₂ Sensor 1",
-        register=755,
-        device_class=SensorDeviceClass.CO2,
-        native_unit_of_measurement=CONCENTRATION_PARTS_PER_MILLION,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:molecule-co2",
-    ),
-    MaicoSensorEntityDescription(
-        key="co2_sensor2",
-        name="CO₂ Sensor 2",
-        register=756,
-        device_class=SensorDeviceClass.CO2,
-        native_unit_of_measurement=CONCENTRATION_PARTS_PER_MILLION,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:molecule-co2",
-    ),
-    MaicoSensorEntityDescription(
-        key="co2_sensor3",
-        name="CO₂ Sensor 3",
-        register=757,
-        device_class=SensorDeviceClass.CO2,
-        native_unit_of_measurement=CONCENTRATION_PARTS_PER_MILLION,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:molecule-co2",
-    ),
-    MaicoSensorEntityDescription(
-        key="co2_sensor4",
-        name="CO₂ Sensor 4",
-        register=758,
-        device_class=SensorDeviceClass.CO2,
-        native_unit_of_measurement=CONCENTRATION_PARTS_PER_MILLION,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:molecule-co2",
-    ),
-    # ── VOC ───────────────────────────────────────────────────────────────────
-    # Rohwert = direkt in ppm (kein Skalierungsfaktor trotz CSV-Angabe "* 10")
-    MaicoSensorEntityDescription(
-        key="voc_sensor1",
-        name="VOC Sensor 1",
-        register=759,
-        device_class=SensorDeviceClass.VOLATILE_ORGANIC_COMPOUNDS_PARTS,
-        native_unit_of_measurement=CONCENTRATION_PARTS_PER_MILLION,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:air-purifier",
-    ),
-    MaicoSensorEntityDescription(
-        key="voc_sensor2",
-        name="VOC Sensor 2",
-        register=760,
-        device_class=SensorDeviceClass.VOLATILE_ORGANIC_COMPOUNDS_PARTS,
-        native_unit_of_measurement=CONCENTRATION_PARTS_PER_MILLION,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:air-purifier",
-    ),
-    MaicoSensorEntityDescription(
-        key="voc_sensor3",
-        name="VOC Sensor 3",
-        register=761,
-        device_class=SensorDeviceClass.VOLATILE_ORGANIC_COMPOUNDS_PARTS,
-        native_unit_of_measurement=CONCENTRATION_PARTS_PER_MILLION,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:air-purifier",
-    ),
-    MaicoSensorEntityDescription(
-        key="voc_sensor4",
-        name="VOC Sensor 4",
-        register=762,
-        device_class=SensorDeviceClass.VOLATILE_ORGANIC_COMPOUNDS_PARTS,
-        native_unit_of_measurement=CONCENTRATION_PARTS_PER_MILLION,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:air-purifier",
-    ),
-    # ── Betriebsstunden (32-Bit High/Low-Word) ────────────────────────────────
-    MaicoSensorEntityDescription(
-        key="betriebsstunden_feuchteschutz",
-        name="Betriebsstunden Feuchteschutz",
-        register=851,         # Low-Word
-        high_register=850,    # High-Word
-        native_unit_of_measurement=UNIT_HOURS,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        icon="mdi:clock-outline",
-    ),
-    MaicoSensorEntityDescription(
-        key="betriebsstunden_reduziert",
-        name="Betriebsstunden Reduzierte Lüftung",
-        register=853,
-        high_register=852,
-        native_unit_of_measurement=UNIT_HOURS,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        icon="mdi:clock-outline",
-    ),
-    MaicoSensorEntityDescription(
-        key="betriebsstunden_nenn",
-        name="Betriebsstunden Nennlüftung",
-        register=855,
-        high_register=854,
-        native_unit_of_measurement=UNIT_HOURS,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        icon="mdi:clock-outline",
-    ),
-    MaicoSensorEntityDescription(
-        key="betriebsstunden_intensiv",
-        name="Betriebsstunden Intensivlüftung",
-        register=857,
-        high_register=856,
-        native_unit_of_measurement=UNIT_HOURS,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        icon="mdi:clock-outline",
-    ),
-    MaicoSensorEntityDescription(
-        key="betriebsstunden_gesamt",
-        name="Betriebsstunden Gesamt",
-        register=859,
-        high_register=858,
-        native_unit_of_measurement=UNIT_HOURS,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        icon="mdi:clock-check-outline",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
     ),
 )
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    entry: MaicoKWLConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Richtet Sensor-Entitäten ein."""
-    coordinator: MaicoKWLCoordinator = hass.data[DOMAIN][entry.entry_id]
-    entities: list = [
-        MaicoSensorEntity(coordinator, description, entry)
-        for description in SENSOR_DESCRIPTIONS
-    ]
-    entities.append(MaicoWRGSensorEntity(coordinator, entry))
-    async_add_entities(entities)
+    """Set up sensor entities."""
+    coordinator = entry.runtime_data
+    async_add_entities(MaicoSensor(coordinator, description) for description in SENSORS)
 
 
-class MaicoSensorEntity(CoordinatorEntity[MaicoKWLCoordinator], SensorEntity):
-    """Repräsentiert einen Maico KWL Sensor."""
+class MaicoSensor(MaicoEntity, SensorEntity):
+    """A Maico KWL sensor."""
 
     entity_description: MaicoSensorEntityDescription
-    _attr_has_entity_name = True
 
     def __init__(
         self,
         coordinator: MaicoKWLCoordinator,
         description: MaicoSensorEntityDescription,
-        entry: ConfigEntry,
     ) -> None:
-        """Initialisierung."""
-        super().__init__(coordinator)
-        self.entity_description = description
-        self._attr_unique_id = f"{entry.entry_id}_{description.key}"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)},
-            name="Maico KWL",
-            manufacturer="Maico",
-            model="WS 320 KBET",
-            configuration_url=f"http://{entry.data[CONF_HOST]}",
-        )
+        """Initialize the sensor."""
+        super().__init__(coordinator, description, description.registers)
+        if description.enabled_fn is not None:
+            self._attr_entity_registry_enabled_default = bool(
+                coordinator.data and description.enabled_fn(coordinator.data)
+            )
 
     @property
-    def native_value(self) -> float | str | None:
-        """Gibt den aktuellen Sensorwert zurück."""
-        data = self.coordinator.data
-        if not data:
-            return None
-
-        desc = self.entity_description
-
-        # 32-Bit-Betriebsstunden
-        if desc.high_register is not None:
-            high = data.get(desc.high_register)
-            low = data.get(desc.register)
-            if high is None or low is None:
-                return None
-            return combine_32bit(high, low)
-
-        raw = data.get(desc.register)
-        if raw is None:
-            return None
-
-        # Text-Mapping (z. B. Lüftungsstufe)
-        if desc.value_map is not None:
-            return desc.value_map.get(raw, f"Unbekannt ({raw})")
-
-        if desc.signed:
-            raw = to_int16(raw)
-
-        if desc.scale != 1.0:
-            return round(raw * desc.scale, 1)
-
-        return raw
+    def native_value(self) -> Any:
+        """Return the sensor value."""
+        return self.entity_description.value_fn(self.coordinator)
 
     @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        """Zusätzliche Attribute."""
-        data = self.coordinator.data
-        if not data:
-            return {}
-
-        desc = self.entity_description
-        attrs: dict[str, Any] = {
-            "modbus_register": desc.register,
-        }
-
-        if desc.high_register is not None:
-            attrs["modbus_register_high"] = desc.high_register
-
-        raw = data.get(desc.register)
-        if raw is not None and desc.value_map is None:
-            attrs["rohwert"] = raw
-
-        return attrs
-
-
-# ── Wärmerückgewinnung (berechneter Sensor) ───────────────────────────────────
-
-def _raw_to_temp(raw: int) -> float:
-    """Konvertiert einen rohen Register-Temperaturwert (signed, ×10) in °C."""
-    if raw > 32767:
-        raw -= 65536
-    return raw / 10.0
-
-
-class MaicoWRGSensorEntity(CoordinatorEntity[MaicoKWLCoordinator], SensorEntity):
-    """Wärmerückgewinnungs-Effizienz in Prozent (berechneter Sensor).
-
-    Formel: η = (T_Zuluft − T_Außenluft) / (T_Abluft − T_Außenluft) × 100
-
-    Register:
-      703 – Temperatur Lufteintritt (Außenluft, Kaltseite Eintritt)
-      704 – Temperatur Zuluft       (Frischluft nach Wärmetauscher)
-      705 – Temperatur Abluft       (Raumluft, Warmseite Eintritt)
-    """
-
-    _attr_has_entity_name = True
-    _attr_name = "Wärmerückgewinnung"
-    _attr_native_unit_of_measurement = PERCENTAGE
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_icon = "mdi:heat-wave"
-    _attr_suggested_display_precision = 1
-
-    # Register-Adressen
-    _REG_AUSSEN = 703
-    _REG_ZULUFT = 704
-    _REG_ABLUFT = 705
-
-    def __init__(
-        self,
-        coordinator: MaicoKWLCoordinator,
-        entry: ConfigEntry,
-    ) -> None:
-        """Initialisierung."""
-        super().__init__(coordinator)
-        self._attr_unique_id = f"{entry.entry_id}_waermerueckgewinnung"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)},
-            name="Maico KWL",
-            manufacturer="Maico",
-            model="WS 320 KBET",
-            configuration_url=f"http://{entry.data[CONF_HOST]}",
-        )
-
-    @property
-    def native_value(self) -> float | None:
-        """Berechnet die Wärmerückgewinnungseffizienz in Prozent."""
-        data = self.coordinator.data
-        if not data:
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return the decoded bits of fault and notice words."""
+        if self.entity_description.attrs_fn is None:
             return None
-
-        raw_aussen = data.get(self._REG_AUSSEN)
-        raw_zuluft = data.get(self._REG_ZULUFT)
-        raw_abluft = data.get(self._REG_ABLUFT)
-
-        if raw_aussen is None or raw_zuluft is None or raw_abluft is None:
-            return None
-
-        t_aussen = _raw_to_temp(raw_aussen)
-        t_zuluft = _raw_to_temp(raw_zuluft)
-        t_abluft = _raw_to_temp(raw_abluft)
-
-        nenner = t_abluft - t_aussen
-        if abs(nenner) < 0.5:
-            # Temperaturunterschied zu gering für eine sinnvolle Berechnung
-            return None
-
-        effizienz = (t_zuluft - t_aussen) / nenner * 100.0
-        # Auf 0–100 % begrenzen (Messungenauigkeiten können leicht über-/unterschreiten)
-        return round(max(0.0, min(100.0, effizienz)), 1)
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        """Zeigt die Eingangstemperaturen der Berechnung als Attribute."""
-        data = self.coordinator.data
-        if not data:
-            return {}
-
-        raw_aussen = data.get(self._REG_AUSSEN)
-        raw_zuluft = data.get(self._REG_ZULUFT)
-        raw_abluft = data.get(self._REG_ABLUFT)
-
-        attrs: dict[str, Any] = {
-            "formel": "η = (T_Zuluft − T_Außenluft) / (T_Abluft − T_Außenluft) × 100",
-        }
-
-        if raw_aussen is not None:
-            attrs["t_aussenluft_c"] = _raw_to_temp(raw_aussen)
-        if raw_zuluft is not None:
-            attrs["t_zuluft_c"] = _raw_to_temp(raw_zuluft)
-        if raw_abluft is not None:
-            attrs["t_abluft_c"] = _raw_to_temp(raw_abluft)
-
-        return attrs
+        return self.entity_description.attrs_fn(self.coordinator.data)

@@ -2,21 +2,436 @@
   "config": {
     "step": {
       "user": {
-        "title": "Maico KWL Lüftungsanlage einrichten",
-        "description": "Verbindungsparameter für die Maico KWL Lüftungsanlage (Modbus TCP).\n\nDie Standard-Modbus-Adresse der Anlage ist **10**, der Standard-Port ist **502**.",
+        "title": "Maico KWL einrichten",
+        "description": "Verbindung zur Lüftungsanlage über Modbus TCP (Firmware V1.1.1 oder neuer). Das Gerät akzeptiert nur eine Modbus-TCP-Verbindung gleichzeitig.",
         "data": {
-          "host": "IP-Adresse der Lüftungsanlage",
-          "port": "Modbus-TCP-Port (Standard: 502)",
-          "slave": "Modbus-Geräte-ID (Standard: 10)",
-          "scan_interval": "Aktualisierungsintervall in Sekunden (Standard: 30)"
+          "host": "Host",
+          "port": "Port",
+          "slave": "Modbus-Adresse (Unit-ID)"
+        },
+        "data_description": {
+          "host": "IP-Adresse oder Hostname der Lüftungsanlage.",
+          "port": "Modbus-TCP-Port, Standard 502.",
+          "slave": "Am Gerät eingestellte Modbus-Adresse, Standard 10."
+        }
+      },
+      "reconfigure": {
+        "title": "Verbindung ändern",
+        "data": {
+          "host": "Host",
+          "port": "Port",
+          "slave": "Modbus-Adresse (Unit-ID)"
+        },
+        "data_description": {
+          "host": "IP-Adresse oder Hostname der Lüftungsanlage.",
+          "port": "Modbus-TCP-Port, Standard 502.",
+          "slave": "Am Gerät eingestellte Modbus-Adresse, Standard 10."
         }
       }
     },
     "error": {
-      "invalid_host": "Ungültige IP-Adresse oder Hostname."
+      "cannot_connect": "Keine Verbindung zum Gerät. Host, Port und Modbus-Adresse prüfen, und ob ein anderes Programm die einzige Modbus-TCP-Verbindung belegt.",
+      "not_maico": "Das Gerät antwortet, aber seine Werte passen nicht zu einer Maico KWL. Adresse prüfen.",
+      "unknown": "Unerwarteter Fehler, siehe Protokoll."
     },
     "abort": {
-      "already_configured": "Diese Lüftungsanlage ist bereits konfiguriert."
+      "already_configured": "Diese Lüftungsanlage ist bereits eingerichtet.",
+      "reconfigure_successful": "Die Verbindung wurde geändert."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Maico KWL Optionen",
+        "data": {
+          "scan_interval": "Aktualisierungsintervall",
+          "bus_temperature_entity": "Quelle Raumtemperatur für Bus-Eingang",
+          "bus_humidity_entity": "Quelle relative Feuchte für Bus-Eingang",
+          "bus_air_quality_entity": "Quelle CO₂ für Bus-Eingang"
+        },
+        "data_description": {
+          "scan_interval": "Wie oft das Gerät abgefragt wird.",
+          "bus_temperature_entity": "Wird bei jeder Änderung und mindestens alle 5 Minuten an Register 707 gesendet. Das Gerät nutzt den Wert nur bei Raumtemperatur-Quelle *Bus*.",
+          "bus_humidity_entity": "Wird bei jeder Änderung und mindestens alle 5 Minuten an Register 763 gesendet.",
+          "bus_air_quality_entity": "Wird bei jeder Änderung und mindestens alle 5 Minuten an Register 764 (ppm) gesendet."
+        }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "supply_fan_running": {
+        "name": "Zuluftventilator"
+      },
+      "exhaust_fan_running": {
+        "name": "Abluftventilator"
+      },
+      "summer_bypass": {
+        "name": "Sommerbypass"
+      },
+      "ptc_heater": {
+        "name": "PTC-Heizregister"
+      },
+      "base_board_contact": {
+        "name": "Schaltkontakt Basisplatine"
+      },
+      "reheating_relay": {
+        "name": "Relais Nachheizung"
+      },
+      "fault": {
+        "name": "Störung"
+      },
+      "device_filter_due": {
+        "name": "Gerätefilter wechseln"
+      },
+      "outdoor_filter_due": {
+        "name": "Außenfilter wechseln"
+      },
+      "room_filter_due": {
+        "name": "Raumfilter wechseln"
+      },
+      "frost_protection": {
+        "name": "Frostschutz"
+      },
+      "humidity_protection": {
+        "name": "Feuchteschutz"
+      }
+    },
+    "button": {
+      "reset_device_filter": {
+        "name": "Gerätefilter gewechselt"
+      },
+      "reset_outdoor_filter": {
+        "name": "Außenfilter gewechselt"
+      },
+      "reset_room_filter": {
+        "name": "Raumfilter gewechselt"
+      },
+      "reset_faults": {
+        "name": "Störungen zurücksetzen"
+      },
+      "sync_clock": {
+        "name": "Uhrzeit synchronisieren"
+      }
+    },
+    "fan": {
+      "ventilation": {
+        "name": "Lüftung",
+        "state_attributes": {
+          "preset_mode": {
+            "state": {
+              "off": "Aus",
+              "manual": "Manuell",
+              "auto_time": "Auto-Zeit",
+              "auto_sensor": "Auto-Sensor",
+              "eco_supply_air": "Eco-Zuluft",
+              "eco_exhaust_air": "Eco-Abluft"
+            }
+          }
+        }
+      }
+    },
+    "number": {
+      "room_temperature_setpoint": {
+        "name": "Solltemperatur Raum"
+      },
+      "room_temperature_offset": {
+        "name": "Abgleich Raumtemperatur"
+      },
+      "supply_air_min_temperature_cooling": {
+        "name": "Zuluft-Mindesttemperatur Kühlen"
+      },
+      "room_temperature_max": {
+        "name": "Raum-Maximaltemperatur"
+      },
+      "airflow_reduced": {
+        "name": "Volumenstrom reduzierte Lüftung"
+      },
+      "airflow_nominal": {
+        "name": "Volumenstrom Nennlüftung"
+      },
+      "airflow_intensive": {
+        "name": "Volumenstrom Intensivlüftung"
+      },
+      "ventilation_level_duration": {
+        "name": "Dauer Lüftungsstufe"
+      },
+      "device_filter_interval": {
+        "name": "Filterintervall Gerätefilter",
+        "unit_of_measurement": "Monate"
+      },
+      "outdoor_filter_interval": {
+        "name": "Filterintervall Außenfilter",
+        "unit_of_measurement": "Monate"
+      },
+      "room_filter_interval": {
+        "name": "Filterintervall Raumfilter",
+        "unit_of_measurement": "Monate"
+      },
+      "filter_pressure_limit": {
+        "name": "Zulässiges Delta p Filter"
+      },
+      "bus_room_temperature": {
+        "name": "Raumtemperatur Bus"
+      },
+      "bus_humidity": {
+        "name": "Relative Feuchte Bus"
+      },
+      "bus_air_quality": {
+        "name": "Luftqualität Bus"
+      }
+    },
+    "select": {
+      "operating_mode": {
+        "name": "Betriebsart",
+        "state": {
+          "off": "Aus",
+          "manual": "Manuell",
+          "auto_time": "Auto-Zeit",
+          "auto_sensor": "Auto-Sensor",
+          "eco_supply_air": "Eco-Zuluft",
+          "eco_exhaust_air": "Eco-Abluft"
+        }
+      },
+      "ventilation_level": {
+        "name": "Lüftungsstufe",
+        "state": {
+          "off": "Aus",
+          "humidity_protection": "Feuchteschutz",
+          "reduced": "Reduziert",
+          "nominal": "Nennlüftung",
+          "intensive": "Intensiv"
+        }
+      },
+      "season": {
+        "name": "Jahreszeit",
+        "state": {
+          "winter": "Winter",
+          "summer": "Sommer"
+        }
+      },
+      "room_temperature_source": {
+        "name": "Raumtemperatur-Quelle",
+        "state": {
+          "comfort_control_panel": "Komfort-Bedieneinheit",
+          "external": "Externer Sensor",
+          "internal": "Interner Sensor",
+          "bus": "Bus"
+        }
+      },
+      "language": {
+        "name": "Gerätesprache",
+        "state": {
+          "german": "Deutsch",
+          "english": "Englisch",
+          "french": "Französisch",
+          "italian": "Italienisch"
+        }
+      }
+    },
+    "sensor": {
+      "current_ventilation_level": {
+        "name": "Aktuelle Lüftungsstufe",
+        "state": {
+          "off": "Aus",
+          "humidity_protection": "Feuchteschutz",
+          "reduced": "Reduziert",
+          "nominal": "Nennlüftung",
+          "intensive": "Intensiv"
+        }
+      },
+      "supply_fan_speed": {
+        "name": "Drehzahl Zuluftventilator"
+      },
+      "exhaust_fan_speed": {
+        "name": "Drehzahl Abluftventilator"
+      },
+      "supply_airflow": {
+        "name": "Volumenstrom Zuluft"
+      },
+      "exhaust_airflow": {
+        "name": "Volumenstrom Abluft"
+      },
+      "device_filter_remaining": {
+        "name": "Restlaufzeit Gerätefilter"
+      },
+      "outdoor_filter_remaining": {
+        "name": "Restlaufzeit Außenfilter"
+      },
+      "room_filter_remaining": {
+        "name": "Restlaufzeit Raumfilter"
+      },
+      "room_temperature": {
+        "name": "Temperatur Raum"
+      },
+      "external_room_temperature": {
+        "name": "Temperatur Raum extern"
+      },
+      "outdoor_before_ehx_temperature": {
+        "name": "Temperatur Außenluft vor EWT"
+      },
+      "air_intake_temperature": {
+        "name": "Temperatur Lufteintritt"
+      },
+      "supply_air_temperature": {
+        "name": "Temperatur Zuluft"
+      },
+      "extract_air_temperature": {
+        "name": "Temperatur Abluft"
+      },
+      "exhaust_air_temperature": {
+        "name": "Temperatur Fortluft"
+      },
+      "extract_air_humidity": {
+        "name": "Relative Feuchte Abluft"
+      },
+      "humidity_sensor": {
+        "name": "Relative Feuchte Sensor {n}"
+      },
+      "co2_sensor": {
+        "name": "CO₂ Sensor {n}"
+      },
+      "voc_sensor": {
+        "name": "VOC Sensor {n}"
+      },
+      "enocean_co2": {
+        "name": "EnOcean CO₂ ID{n}"
+      },
+      "enocean_humidity": {
+        "name": "EnOcean Feuchte ID{n}"
+      },
+      "enocean_voc": {
+        "name": "EnOcean VOC ID{n}"
+      },
+      "faults": {
+        "name": "Aktive Störungen",
+        "state_attributes": {
+          "active": {
+            "name": "Aktiv"
+          },
+          "code": {
+            "name": "Code"
+          }
+        }
+      },
+      "notices": {
+        "name": "Aktive Hinweise",
+        "state_attributes": {
+          "active": {
+            "name": "Aktiv"
+          },
+          "code": {
+            "name": "Code"
+          }
+        }
+      },
+      "brine_pump": {
+        "name": "Sole-Umwälzpumpe",
+        "state": {
+          "off": "Aus",
+          "heating": "Heizen",
+          "cooling": "Kühlen"
+        }
+      },
+      "three_way_damper": {
+        "name": "3-Wege-Luftklappe",
+        "state": {
+          "off": "Aus",
+          "heating": "Heizen",
+          "cooling": "Kühlen"
+        }
+      },
+      "zone_damper": {
+        "name": "Zonenklappe",
+        "state": {
+          "off": "Aus",
+          "zone_1": "Zone 1",
+          "zone_2": "Zone 2",
+          "zone_sensor": "Zone Sensor"
+        }
+      },
+      "operating_hours_humidity_protection": {
+        "name": "Betriebsstunden Feuchteschutz"
+      },
+      "operating_hours_reduced": {
+        "name": "Betriebsstunden reduzierte Lüftung"
+      },
+      "operating_hours_nominal": {
+        "name": "Betriebsstunden Nennlüftung"
+      },
+      "operating_hours_intensive": {
+        "name": "Betriebsstunden Intensivlüftung"
+      },
+      "operating_hours_total": {
+        "name": "Betriebsstunden gesamt"
+      },
+      "operating_hours_reheating_relay": {
+        "name": "Betriebsstunden Relais Nachheizung"
+      },
+      "operating_hours_brine_pump": {
+        "name": "Betriebsstunden Sole-Umwälzpumpe"
+      },
+      "operating_hours_three_way_damper": {
+        "name": "Betriebsstunden 3-Wege-Luftklappe"
+      },
+      "operating_hours_zone_damper": {
+        "name": "Betriebsstunden Zonenklappe"
+      },
+      "operating_hours_switch_contact": {
+        "name": "Betriebsstunden Schaltkontakt"
+      },
+      "heat_recovery_efficiency": {
+        "name": "Wärmerückgewinnungsgrad"
+      },
+      "heat_recovery_power": {
+        "name": "Wärmerückgewinnungsleistung"
+      },
+      "clock_deviation": {
+        "name": "Abweichung Geräteuhr"
+      }
+    },
+    "switch": {
+      "boost_ventilation": {
+        "name": "Stoßlüftung"
+      },
+      "off_level_lock": {
+        "name": "Lüftungsstufe Aus sperren"
+      },
+      "control_panel_lock": {
+        "name": "Bedieneinheit sperren"
+      }
+    }
+  },
+  "exceptions": {
+    "communication_error": {
+      "message": "Kommunikation mit der Maico KWL fehlgeschlagen: {error}"
+    },
+    "not_maico": {
+      "message": "Das Gerät sieht nicht wie eine Maico KWL aus ({problem}); es wird nichts geschrieben."
+    },
+    "write_failed": {
+      "message": "Schreiben von Register {address} fehlgeschlagen: {error}"
+    },
+    "bus_input_has_source": {
+      "message": "Dieser Bus-Eingang wird von {entity_id} gespeist. Zum manuellen Setzen die Quelle in den Optionen entfernen."
+    }
+  },
+  "issues": {
+    "fault_active": {
+      "title": "Lüftungsanlage meldet eine Störung",
+      "description": "Die Maico KWL meldet die Störung(en) {faults} (Code {code}). Ursache beheben und anschließend *Störungen zurücksetzen* drücken. Die Meldung verschwindet, sobald das Gerät keine Störung mehr meldet."
+    },
+    "device_filter_due": {
+      "title": "Gerätefilter wechseln",
+      "description": "Die Maico KWL fordert einen Wechsel des Gerätefilters an. Nach dem Wechsel *Gerätefilter gewechselt* drücken, damit das Filterintervall neu startet."
+    },
+    "outdoor_filter_due": {
+      "title": "Außenfilter wechseln",
+      "description": "Die Maico KWL fordert einen Wechsel des Außenfilters an. Nach dem Wechsel *Außenfilter gewechselt* drücken, damit das Filterintervall neu startet."
+    },
+    "room_filter_due": {
+      "title": "Raumfilter wechseln",
+      "description": "Die Maico KWL fordert einen Wechsel des Raumfilters an. Nach dem Wechsel *Raumfilter gewechselt* drücken, damit das Filterintervall neu startet."
     }
   }
 }

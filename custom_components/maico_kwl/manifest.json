@@ -1,10 +1,14 @@
 {
   "domain": "maico_kwl",
-  "name": "Maico KWL Ventilation Unit",
+  "name": "Maico KWL",
+  "codeowners": ["@rolflied"],
   "config_flow": true,
-  "documentation": "https://www.maico-ventilatoren.com",
-  "requirements": [],
-  "version": "0.1.0",
+  "dependencies": ["modbus"],
+  "documentation": "https://github.com/rolflied/maico-kwl",
+  "integration_type": "device",
   "iot_class": "local_polling",
-  "dependencies": []
+  "issue_tracker": "https://github.com/rolflied/maico-kwl/issues",
+  "loggers": ["modbus_connection", "tmodbus"],
+  "requirements": [],
+  "version": "0.2.0"
 }

@@ -1,0 +1,136 @@
+{
+  "entity": {
+    "binary_sensor": {
+      "supply_fan_running": { "default": "mdi:fan" },
+      "exhaust_fan_running": { "default": "mdi:fan" },
+      "summer_bypass": { "default": "mdi:valve-closed", "state": { "on": "mdi:valve-open" } },
+      "ptc_heater": { "default": "mdi:heating-coil" },
+      "base_board_contact": { "default": "mdi:electric-switch" },
+      "reheating_relay": { "default": "mdi:radiator" },
+      "fault": { "default": "mdi:alert-circle-check-outline", "state": { "on": "mdi:alert-circle" } },
+      "device_filter_due": { "default": "mdi:air-filter" },
+      "outdoor_filter_due": { "default": "mdi:air-filter" },
+      "room_filter_due": { "default": "mdi:air-filter" },
+      "frost_protection": { "default": "mdi:snowflake-thermometer" },
+      "humidity_protection": { "default": "mdi:water-percent-alert" }
+    },
+    "button": {
+      "reset_device_filter": { "default": "mdi:air-filter" },
+      "reset_outdoor_filter": { "default": "mdi:air-filter" },
+      "reset_room_filter": { "default": "mdi:air-filter" },
+      "reset_faults": { "default": "mdi:alert-remove-outline" },
+      "sync_clock": { "default": "mdi:clock-check-outline" }
+    },
+    "fan": {
+      "ventilation": {
+        "default": "mdi:hvac",
+        "state": { "off": "mdi:hvac-off" },
+        "state_attributes": {
+          "preset_mode": {
+            "default": "mdi:cog-outline",
+            "state": {
+              "manual": "mdi:hand-back-right-outline",
+              "auto_time": "mdi:clock-outline",
+              "auto_sensor": "mdi:leak",
+              "eco_supply_air": "mdi:leaf",
+              "eco_exhaust_air": "mdi:leaf"
+            }
+          }
+        }
+      }
+    },
+    "number": {
+      "room_temperature_setpoint": { "default": "mdi:thermometer-auto" },
+      "room_temperature_offset": { "default": "mdi:thermometer-check" },
+      "supply_air_min_temperature_cooling": { "default": "mdi:snowflake-thermometer" },
+      "room_temperature_max": { "default": "mdi:thermometer-high" },
+      "airflow_reduced": { "default": "mdi:fan-speed-1" },
+      "airflow_nominal": { "default": "mdi:fan-speed-2" },
+      "airflow_intensive": { "default": "mdi:fan-speed-3" },
+      "ventilation_level_duration": { "default": "mdi:timer-outline" },
+      "device_filter_interval": { "default": "mdi:calendar-refresh" },
+      "outdoor_filter_interval": { "default": "mdi:calendar-refresh" },
+      "room_filter_interval": { "default": "mdi:calendar-refresh" },
+      "filter_pressure_limit": { "default": "mdi:gauge" },
+      "bus_room_temperature": { "default": "mdi:thermometer-lines" },
+      "bus_humidity": { "default": "mdi:water-percent" },
+      "bus_air_quality": { "default": "mdi:molecule-co2" }
+    },
+    "select": {
+      "operating_mode": {
+        "default": "mdi:cog-outline",
+        "state": {
+          "off": "mdi:power-off",
+          "manual": "mdi:hand-back-right-outline",
+          "auto_time": "mdi:clock-outline",
+          "auto_sensor": "mdi:leak",
+          "eco_supply_air": "mdi:leaf",
+          "eco_exhaust_air": "mdi:leaf"
+        }
+      },
+      "ventilation_level": {
+        "default": "mdi:fan",
+        "state": {
+          "off": "mdi:fan-off",
+          "humidity_protection": "mdi:water-percent",
+          "reduced": "mdi:fan-speed-1",
+          "nominal": "mdi:fan-speed-2",
+          "intensive": "mdi:fan-speed-3"
+        }
+      },
+      "season": {
+        "default": "mdi:sun-snowflake-variant",
+        "state": { "winter": "mdi:snowflake", "summer": "mdi:white-balance-sunny" }
+      },
+      "room_temperature_source": { "default": "mdi:thermometer-probe" },
+      "language": { "default": "mdi:translate" }
+    },
+    "sensor": {
+      "current_ventilation_level": {
+        "default": "mdi:fan",
+        "state": {
+          "off": "mdi:fan-off",
+          "humidity_protection": "mdi:water-percent",
+          "reduced": "mdi:fan-speed-1",
+          "nominal": "mdi:fan-speed-2",
+          "intensive": "mdi:fan-speed-3"
+        }
+      },
+      "supply_fan_speed": { "default": "mdi:fan-chevron-up" },
+      "exhaust_fan_speed": { "default": "mdi:fan-chevron-down" },
+      "supply_airflow": { "default": "mdi:weather-windy" },
+      "exhaust_airflow": { "default": "mdi:weather-windy" },
+      "device_filter_remaining": { "default": "mdi:air-filter" },
+      "outdoor_filter_remaining": { "default": "mdi:air-filter" },
+      "room_filter_remaining": { "default": "mdi:air-filter" },
+      "outdoor_before_ehx_temperature": { "default": "mdi:thermometer-lines" },
+      "air_intake_temperature": { "default": "mdi:thermometer-chevron-down" },
+      "supply_air_temperature": { "default": "mdi:thermometer-chevron-up" },
+      "extract_air_temperature": { "default": "mdi:thermometer-chevron-up" },
+      "exhaust_air_temperature": { "default": "mdi:thermometer-chevron-down" },
+      "faults": { "default": "mdi:alert-circle-outline" },
+      "notices": { "default": "mdi:information-outline" },
+      "brine_pump": { "default": "mdi:pump" },
+      "three_way_damper": { "default": "mdi:valve" },
+      "zone_damper": { "default": "mdi:valve" },
+      "operating_hours_humidity_protection": { "default": "mdi:clock-outline" },
+      "operating_hours_reduced": { "default": "mdi:clock-outline" },
+      "operating_hours_nominal": { "default": "mdi:clock-outline" },
+      "operating_hours_intensive": { "default": "mdi:clock-outline" },
+      "operating_hours_total": { "default": "mdi:clock-check-outline" },
+      "operating_hours_reheating_relay": { "default": "mdi:clock-outline" },
+      "operating_hours_brine_pump": { "default": "mdi:clock-outline" },
+      "operating_hours_three_way_damper": { "default": "mdi:clock-outline" },
+      "operating_hours_zone_damper": { "default": "mdi:clock-outline" },
+      "operating_hours_switch_contact": { "default": "mdi:clock-outline" },
+      "heat_recovery_efficiency": { "default": "mdi:heat-wave" },
+      "heat_recovery_power": { "default": "mdi:heat-wave" },
+      "clock_deviation": { "default": "mdi:clock-alert-outline" }
+    },
+    "switch": {
+      "boost_ventilation": { "default": "mdi:weather-windy" },
+      "off_level_lock": { "default": "mdi:fan-off" },
+      "control_panel_lock": { "default": "mdi:lock-open-outline", "state": { "on": "mdi:lock" } }
+    }
+  }
+}

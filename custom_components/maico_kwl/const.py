@@ -1,53 +1,18 @@
-"""Konstanten für die Maico KWL Integration."""
+"""Constants for the Maico KWL integration."""
 
-DOMAIN = "maico_kwl"
-DEFAULT_NAME = "Maico KWL"
-DEFAULT_PORT = 502
-DEFAULT_SLAVE = 10
-DEFAULT_SCAN_INTERVAL = 30
+from typing import Final
 
-CONF_SLAVE = "slave"
-CONF_SCAN_INTERVAL = "scan_interval"
+DOMAIN: Final = "maico_kwl"
+MANUFACTURER: Final = "Maico"
+DEFAULT_NAME: Final = "Maico KWL"
+DEFAULT_PORT: Final = 502
+DEFAULT_SLAVE: Final = 10
+DEFAULT_SCAN_INTERVAL: Final = 30
 
-# Modbus-Registerblöcke die gelesen werden (Start-Adresse, Anzahl)
-REGISTER_BLOCKS = [
-    (100, 10),   # 100-109: Grundeinstellungen
-    (150, 10),   # 150-159: Lüftungseinstellungen
-    (300, 3),    # 300-302: Temperatureinstellungen
-    (401, 4),    # 401-404: Fehlermeldungen
-    (550, 5),    # 550-554: Betriebseinstellungen
-    (650, 8),    # 650-657: Lüftungsstatus (aktuell)
-    (700, 7),    # 700-706: Aktuelle Temperaturen
-    (750, 13),   # 750-762: Sensordaten (Feuchte, CO2, VOC)
-    (800, 6),    # 800-805: Schaltzustände
-    (850, 10),   # 850-859: Betriebsstunden
-    (900, 1),    # 900: Filterüberwachung
-]
+CONF_SLAVE: Final = "slave"
+CONF_SCAN_INTERVAL: Final = "scan_interval"
 
-# Betriebsarten für Register 550
-OPERATING_MODES = [
-    "Aus",
-    "Manuell",
-    "Auto-Zeit",
-    "Auto-Sensor",
-    "Eco-Zuluft",
-    "Eco-Abluft",
-]
-
-# Lüftungsstufen für Register 554 (Sollwert) und 650 (Istwert)
-FAN_LEVELS = [
-    "Aus",
-    "Feuchteschutz",
-    "Reduziert",
-    "Nenn",
-    "Intensiv",
-]
-
-# Jahreszeiten für Register 552
-SEASONS = ["Winter", "Sommer"]
-
-# Sprachen für Register 108
-LANGUAGES = ["Deutsch", "Englisch", "Französisch", "Italienisch"]
-
-# Raumtemperaturquelle für Register 109
-ROOM_TEMP_SOURCES = ["Komfort-BDE", "Extern", "Intern", "Bus"]
+# Options: Home Assistant entities whose values are fed to the bus inputs.
+CONF_BUS_TEMPERATURE_ENTITY: Final = "bus_temperature_entity"
+CONF_BUS_HUMIDITY_ENTITY: Final = "bus_humidity_entity"
+CONF_BUS_AIR_QUALITY_ENTITY: Final = "bus_air_quality_entity"
