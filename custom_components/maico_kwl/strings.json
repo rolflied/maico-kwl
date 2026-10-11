@@ -2,21 +2,436 @@
   "config": {
     "step": {
       "user": {
-        "title": "Set up Maico KWL ventilation unit",
-        "description": "Connection parameters for the Maico KWL ventilation unit (Modbus TCP)",
+        "title": "Set up Maico KWL",
+        "description": "Connection to the ventilation unit over Modbus TCP (firmware V1.1.1 or newer). The unit accepts a single Modbus TCP connection only.",
         "data": {
-          "host": "IP address",
-          "port": "Modbus port",
-          "slave": "Modbus device ID (slave)",
-          "scan_interval": "Update interval (seconds)"
+          "host": "Host",
+          "port": "Port",
+          "slave": "Modbus address (unit ID)"
+        },
+        "data_description": {
+          "host": "IP address or host name of the ventilation unit.",
+          "port": "Modbus TCP port, 502 by default.",
+          "slave": "Modbus address set on the unit, 10 by default."
+        }
+      },
+      "reconfigure": {
+        "title": "Change connection",
+        "data": {
+          "host": "Host",
+          "port": "Port",
+          "slave": "Modbus address (unit ID)"
+        },
+        "data_description": {
+          "host": "IP address or host name of the ventilation unit.",
+          "port": "Modbus TCP port, 502 by default.",
+          "slave": "Modbus address set on the unit, 10 by default."
         }
       }
     },
     "error": {
-      "invalid_host": "Invalid IP address or hostname."
+      "cannot_connect": "Could not connect to the unit. Check host, port and Modbus address, and that no other program holds the unit's only Modbus TCP connection.",
+      "not_maico": "The device answers, but its values do not match a Maico KWL. Check the address.",
+      "unknown": "Unexpected error, see the log."
     },
     "abort": {
-      "already_configured": "This device is already configured."
+      "already_configured": "This unit is already configured.",
+      "reconfigure_successful": "The connection was changed."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Maico KWL options",
+        "data": {
+          "scan_interval": "Update interval",
+          "bus_temperature_entity": "Room temperature source for the bus input",
+          "bus_humidity_entity": "Humidity source for the bus input",
+          "bus_air_quality_entity": "CO₂ source for the bus input"
+        },
+        "data_description": {
+          "scan_interval": "How often the unit is polled.",
+          "bus_temperature_entity": "Sent to register 707 on every change and at least every 5 minutes. The unit only uses it with room temperature source *Bus*.",
+          "bus_humidity_entity": "Sent to register 763 on every change and at least every 5 minutes.",
+          "bus_air_quality_entity": "Sent to register 764 (ppm) on every change and at least every 5 minutes."
+        }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "supply_fan_running": {
+        "name": "Supply fan"
+      },
+      "exhaust_fan_running": {
+        "name": "Exhaust fan"
+      },
+      "summer_bypass": {
+        "name": "Summer bypass"
+      },
+      "ptc_heater": {
+        "name": "PTC heater"
+      },
+      "base_board_contact": {
+        "name": "Base board switch contact"
+      },
+      "reheating_relay": {
+        "name": "Reheating relay"
+      },
+      "fault": {
+        "name": "Fault"
+      },
+      "device_filter_due": {
+        "name": "Device filter change due"
+      },
+      "outdoor_filter_due": {
+        "name": "Outdoor filter change due"
+      },
+      "room_filter_due": {
+        "name": "Room filter change due"
+      },
+      "frost_protection": {
+        "name": "Frost protection"
+      },
+      "humidity_protection": {
+        "name": "Humidity protection"
+      }
+    },
+    "button": {
+      "reset_device_filter": {
+        "name": "Device filter changed"
+      },
+      "reset_outdoor_filter": {
+        "name": "Outdoor filter changed"
+      },
+      "reset_room_filter": {
+        "name": "Room filter changed"
+      },
+      "reset_faults": {
+        "name": "Reset faults"
+      },
+      "sync_clock": {
+        "name": "Sync clock"
+      }
+    },
+    "fan": {
+      "ventilation": {
+        "name": "Ventilation",
+        "state_attributes": {
+          "preset_mode": {
+            "state": {
+              "off": "Off",
+              "manual": "Manual",
+              "auto_time": "Auto (time)",
+              "auto_sensor": "Auto (sensor)",
+              "eco_supply_air": "Eco supply air",
+              "eco_exhaust_air": "Eco exhaust air"
+            }
+          }
+        }
+      }
+    },
+    "number": {
+      "room_temperature_setpoint": {
+        "name": "Room temperature setpoint"
+      },
+      "room_temperature_offset": {
+        "name": "Room temperature offset"
+      },
+      "supply_air_min_temperature_cooling": {
+        "name": "Minimum supply air temperature (cooling)"
+      },
+      "room_temperature_max": {
+        "name": "Maximum room temperature"
+      },
+      "airflow_reduced": {
+        "name": "Airflow reduced"
+      },
+      "airflow_nominal": {
+        "name": "Airflow nominal"
+      },
+      "airflow_intensive": {
+        "name": "Airflow intensive"
+      },
+      "ventilation_level_duration": {
+        "name": "Ventilation level duration"
+      },
+      "device_filter_interval": {
+        "name": "Device filter interval",
+        "unit_of_measurement": "months"
+      },
+      "outdoor_filter_interval": {
+        "name": "Outdoor filter interval",
+        "unit_of_measurement": "months"
+      },
+      "room_filter_interval": {
+        "name": "Room filter interval",
+        "unit_of_measurement": "months"
+      },
+      "filter_pressure_limit": {
+        "name": "Allowed filter pressure difference"
+      },
+      "bus_room_temperature": {
+        "name": "Room temperature (bus)"
+      },
+      "bus_humidity": {
+        "name": "Humidity (bus)"
+      },
+      "bus_air_quality": {
+        "name": "Air quality (bus)"
+      }
+    },
+    "select": {
+      "operating_mode": {
+        "name": "Operating mode",
+        "state": {
+          "off": "Off",
+          "manual": "Manual",
+          "auto_time": "Auto (time)",
+          "auto_sensor": "Auto (sensor)",
+          "eco_supply_air": "Eco supply air",
+          "eco_exhaust_air": "Eco exhaust air"
+        }
+      },
+      "ventilation_level": {
+        "name": "Ventilation level",
+        "state": {
+          "off": "Off",
+          "humidity_protection": "Humidity protection",
+          "reduced": "Reduced",
+          "nominal": "Nominal",
+          "intensive": "Intensive"
+        }
+      },
+      "season": {
+        "name": "Season",
+        "state": {
+          "winter": "Winter",
+          "summer": "Summer"
+        }
+      },
+      "room_temperature_source": {
+        "name": "Room temperature source",
+        "state": {
+          "comfort_control_panel": "Comfort control panel",
+          "external": "External sensor",
+          "internal": "Internal sensor",
+          "bus": "Bus"
+        }
+      },
+      "language": {
+        "name": "Device language",
+        "state": {
+          "german": "German",
+          "english": "English",
+          "french": "French",
+          "italian": "Italian"
+        }
+      }
+    },
+    "sensor": {
+      "current_ventilation_level": {
+        "name": "Current ventilation level",
+        "state": {
+          "off": "Off",
+          "humidity_protection": "Humidity protection",
+          "reduced": "Reduced",
+          "nominal": "Nominal",
+          "intensive": "Intensive"
+        }
+      },
+      "supply_fan_speed": {
+        "name": "Supply fan speed"
+      },
+      "exhaust_fan_speed": {
+        "name": "Exhaust fan speed"
+      },
+      "supply_airflow": {
+        "name": "Supply airflow"
+      },
+      "exhaust_airflow": {
+        "name": "Exhaust airflow"
+      },
+      "device_filter_remaining": {
+        "name": "Device filter remaining"
+      },
+      "outdoor_filter_remaining": {
+        "name": "Outdoor filter remaining"
+      },
+      "room_filter_remaining": {
+        "name": "Room filter remaining"
+      },
+      "room_temperature": {
+        "name": "Room temperature"
+      },
+      "external_room_temperature": {
+        "name": "External room temperature"
+      },
+      "outdoor_before_ehx_temperature": {
+        "name": "Outdoor air before ground heat exchanger"
+      },
+      "air_intake_temperature": {
+        "name": "Air intake temperature"
+      },
+      "supply_air_temperature": {
+        "name": "Supply air temperature"
+      },
+      "extract_air_temperature": {
+        "name": "Extract air temperature"
+      },
+      "exhaust_air_temperature": {
+        "name": "Exhaust air temperature"
+      },
+      "extract_air_humidity": {
+        "name": "Extract air humidity"
+      },
+      "humidity_sensor": {
+        "name": "Humidity sensor {n}"
+      },
+      "co2_sensor": {
+        "name": "CO₂ sensor {n}"
+      },
+      "voc_sensor": {
+        "name": "VOC sensor {n}"
+      },
+      "enocean_co2": {
+        "name": "EnOcean CO₂ ID{n}"
+      },
+      "enocean_humidity": {
+        "name": "EnOcean humidity ID{n}"
+      },
+      "enocean_voc": {
+        "name": "EnOcean VOC ID{n}"
+      },
+      "faults": {
+        "name": "Active faults",
+        "state_attributes": {
+          "active": {
+            "name": "Active"
+          },
+          "code": {
+            "name": "Code"
+          }
+        }
+      },
+      "notices": {
+        "name": "Active notices",
+        "state_attributes": {
+          "active": {
+            "name": "Active"
+          },
+          "code": {
+            "name": "Code"
+          }
+        }
+      },
+      "brine_pump": {
+        "name": "Brine pump",
+        "state": {
+          "off": "Off",
+          "heating": "Heating",
+          "cooling": "Cooling"
+        }
+      },
+      "three_way_damper": {
+        "name": "Three-way air damper",
+        "state": {
+          "off": "Off",
+          "heating": "Heating",
+          "cooling": "Cooling"
+        }
+      },
+      "zone_damper": {
+        "name": "Zone damper",
+        "state": {
+          "off": "Off",
+          "zone_1": "Zone 1",
+          "zone_2": "Zone 2",
+          "zone_sensor": "Zone sensor"
+        }
+      },
+      "operating_hours_humidity_protection": {
+        "name": "Operating hours humidity protection"
+      },
+      "operating_hours_reduced": {
+        "name": "Operating hours reduced"
+      },
+      "operating_hours_nominal": {
+        "name": "Operating hours nominal"
+      },
+      "operating_hours_intensive": {
+        "name": "Operating hours intensive"
+      },
+      "operating_hours_total": {
+        "name": "Operating hours total"
+      },
+      "operating_hours_reheating_relay": {
+        "name": "Operating hours reheating relay"
+      },
+      "operating_hours_brine_pump": {
+        "name": "Operating hours brine pump"
+      },
+      "operating_hours_three_way_damper": {
+        "name": "Operating hours three-way damper"
+      },
+      "operating_hours_zone_damper": {
+        "name": "Operating hours zone damper"
+      },
+      "operating_hours_switch_contact": {
+        "name": "Operating hours switch contact"
+      },
+      "heat_recovery_efficiency": {
+        "name": "Heat recovery efficiency"
+      },
+      "heat_recovery_power": {
+        "name": "Heat recovery power"
+      },
+      "clock_deviation": {
+        "name": "Clock deviation"
+      }
+    },
+    "switch": {
+      "boost_ventilation": {
+        "name": "Boost ventilation"
+      },
+      "off_level_lock": {
+        "name": "Lock off level"
+      },
+      "control_panel_lock": {
+        "name": "Lock control panel"
+      }
+    }
+  },
+  "exceptions": {
+    "communication_error": {
+      "message": "Communication with the Maico KWL failed: {error}"
+    },
+    "not_maico": {
+      "message": "The device does not look like a Maico KWL ({problem}); nothing is written to it."
+    },
+    "write_failed": {
+      "message": "Writing register {address} failed: {error}"
+    },
+    "bus_input_has_source": {
+      "message": "This bus input is fed from {entity_id}. Remove the source in the options to set it by hand."
+    }
+  },
+  "issues": {
+    "fault_active": {
+      "title": "Ventilation unit reports a fault",
+      "description": "The Maico KWL reports the fault(s) {faults} (code {code}). Fix the cause, then press *Reset faults*. This message disappears once the unit no longer reports the fault."
+    },
+    "device_filter_due": {
+      "title": "Change the device filter",
+      "description": "The Maico KWL asks for a new device filter. After changing it, press *Device filter changed* so the unit restarts the filter interval."
+    },
+    "outdoor_filter_due": {
+      "title": "Change the outdoor filter",
+      "description": "The Maico KWL asks for a new outdoor filter. After changing it, press *Outdoor filter changed* so the unit restarts the filter interval."
+    },
+    "room_filter_due": {
+      "title": "Change the room filter",
+      "description": "The Maico KWL asks for a new room filter. After changing it, press *Room filter changed* so the unit restarts the filter interval."
     }
   }
 }

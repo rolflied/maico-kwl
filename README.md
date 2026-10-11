@@ -1,156 +1,206 @@
 # Maico KWL – Home Assistant Integration
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
-![Version](https://img.shields.io/badge/version-0.1.0-blue)
-![HA Compatible](https://img.shields.io/badge/Home%20Assistant-2024.1+-green)
+![Version](https://img.shields.io/badge/version-0.2.0-blue)
+![HA Compatible](https://img.shields.io/badge/Home%20Assistant-2026.9+-green)
 
-Unofficial Home Assistant custom integration for the **Maico WS 320 KBET** ventilation unit (controlled residential ventilation) via **Modbus TCP**.
+Unofficial Home Assistant custom integration for **Maico WS/WR ventilation units** (controlled
+residential ventilation, e.g. WS 320 KBET) via **Modbus TCP**.
 
-> Compatible with all Maico WS series devices that support Modbus TCP connectivity.
+The integration uses the shared Modbus connections Home Assistant introduced in **2026.9**
+(`modbus.async_get_unit`). The unit accepts only one Modbus TCP connection; all integrations that
+use the shared API for the same unit share that one connection.
 
 ---
 
-## Features
+## Entities
 
-### Sensors (read-only)
+All register addresses refer to the Maico document *KWL Steuerung Modbus Parameterbeschreibung
+RTU/TCP*. Entities marked *optional* belong to parts that are not fitted to every unit; they start
+**enabled only if the unit reports a value for them during setup** (otherwise disabled, you can
+enable them in the entity settings).
 
-| Sensor | Unit | Description |
+### Fan
+
+| Entity | Registers | Description |
 |---|---|---|
-| Current ventilation level | – | Off / Humidity protection / Reduced / Nominal / Intensive |
-| Supply fan speed | RPM | |
-| Exhaust fan speed | RPM | |
-| Supply air flow rate | m³/h | |
-| Exhaust air flow rate | m³/h | |
-| Device filter remaining life | d | Days until filter replacement |
-| Outdoor filter remaining life | d | |
-| Room filter remaining life | d | |
-| Room temperature | °C | |
-| Room temperature (external) | °C | |
-| Outdoor air temperature (before EWT) | °C | |
-| Air inlet temperature | °C | Outdoor air cold side |
-| Supply air temperature | °C | Fresh air after heat exchanger |
-| Exhaust air temperature | °C | Room air warm side |
-| Discharge air temperature | °C | |
-| Exhaust air relative humidity | % | |
-| Relative humidity sensor 1–4 | % | |
-| CO₂ sensor 1–4 | ppm | |
-| VOC sensor 1–4 | ppm | |
-| Operating hours (per level + total) | h | 32-bit counter |
-| **Heat recovery** | % | Calculated efficiency η |
+| Ventilation (`fan`) | 550, 554, 650 | Speed = ventilation level 1–4 (humidity protection, reduced, nominal, intensive; 25/50/75/100 %). Setting a speed switches to *manual*. Preset modes = operating modes. *Turn off* sets the operating mode *off*, *turn on* restores the last mode. |
 
-### Binary Sensors
+### Sensors
 
-| Sensor | Description |
-|---|---|
-| Supply fan running | |
-| Exhaust fan running | |
-| Bypass open | Summer operation |
-| Heater active | Frost protection |
+| Entity | Register | Unit | Notes |
+|---|---|---|---|
+| Current ventilation level | 650 | enum | |
+| Supply / exhaust fan speed | 651, 652 | rpm | |
+| Supply / exhaust airflow | 653, 654 | m³/h | |
+| Device / outdoor / room filter remaining | 655–657 | d | outdoor/room *optional* |
+| Room temperature | 700 | °C | |
+| External room temperature | 701 | °C | enabled if room temperature source = external |
+| Outdoor air before ground heat exchanger | 702 | °C | ZP1, disabled by default |
+| Air intake / supply / extract / exhaust air temperature | 703–706 | °C | |
+| Extract air humidity | 750 | % | |
+| Humidity sensor 1–4 | 751–754 | % | *optional* |
+| CO₂ sensor 1–4 | 755–758 | ppm | *optional* |
+| VOC sensor 1–4 | 759–762 | ppm | *optional* |
+| EnOcean CO₂ / humidity / VOC ID0–7 | 350–373 | ppm / % | *optional* |
+| Active faults | 401/402 | count | attributes `active` (decoded bits) and `code` |
+| Active notices | 403/404 | count | attributes `active` and `code` |
+| Brine pump, three-way damper, zone damper | 806–808 | enum | ZP1, disabled by default |
+| Operating hours humidity protection / reduced / nominal / intensive / total | 850–859 | h | 32 bit |
+| Operating hours reheating relay, brine pump, dampers, switch contact | 860–869 | h | ZP1, disabled by default |
+| Heat recovery efficiency | 703–705 | % | calculated, see below |
+| Heat recovery power | 653, 703, 704 | W | calculated, see below |
+| Clock deviation | 100–105 | s | unit clock minus HA clock, disabled by default |
+
+### Binary sensors
+
+| Entity | Register | Notes |
+|---|---|---|
+| Supply fan / exhaust fan | 800, 801 | running |
+| Summer bypass | 802 | open |
+| PTC heater | 803 | |
+| Base board switch contact | 804 | diagnostic |
+| Reheating relay | 805 | ZP1, disabled by default |
+| Fault | 401/402 | problem, on while any fault bit is set |
+| Device / outdoor / room filter change due | 403/404 bit 9–11 | problem |
+| Frost protection | 403/404 bit 6 | |
+| Humidity protection | 403/404 bit 13 | |
 
 ### Controls
 
-| Entity | Type | Description |
-|---|---|---|
-| Operating mode | Select | Off / Manual / Auto-Time / Auto-Sensor / Eco-Supply / Eco-Exhaust |
-| Ventilation level (setpoint) | Select | Off / Humidity protection / Reduced / Nominal / Intensive |
-| Season | Select | Winter / Summer |
-| Room temperature source | Select | Comfort panel / External / Internal / Bus |
-| Language | Select | German / English / French / Italian |
-| Supply air target temperature | Number | Target temperature in °C |
-| Bus room temperature | Number | Room temperature for bus transmission (°C) |
-| Bus relative humidity | Number | Humidity value for bus transmission (%) |
-| Bus CO₂/air quality | Number | CO₂ value for bus transmission (ppm) |
-| Burst ventilation | Switch | Short-term intensive ventilation |
-| Off lock | Switch | Prevents the device from being turned off |
-| Control panel lock | Switch | Lock the control panel |
-| Confirm filter change | Button | Reset filter counter |
-| Reset error | Button | Acknowledge active errors |
+| Entity | Type | Register | Notes |
+|---|---|---|---|
+| Operating mode | select | 550 | off, manual, auto (time), auto (sensor), eco supply air, eco exhaust air |
+| Ventilation level | select | 554 | only followed in *manual* mode |
+| Season | select | 552 | winter / summer |
+| Room temperature source | select | 109 | comfort control panel, external, internal, bus |
+| Device language | select | 108 | |
+| Room temperature setpoint | number | 553 | 18–25 °C, 0.5 °C steps |
+| Room temperature offset | number | 300 | −3…3 °C |
+| Minimum supply air temperature (cooling) | number | 301 | 8–29 °C |
+| Maximum room temperature | number | 302 | 18–30 °C |
+| Airflow reduced / nominal / intensive | number | 154–156 | 80–300 m³/h (the unit type may allow less) |
+| Ventilation level duration | number | 153 | 5–90 min |
+| Filter interval device / outdoor / room | number | 150–152 | months |
+| Allowed filter pressure difference | number | 900 | 10–200 % |
+| Room temperature / humidity / air quality (bus) | number | 707, 763, 764 | write-only, see *Bus inputs* |
+| Boost ventilation | switch | 551 | |
+| Lock off level | switch | 106 | |
+| Lock control panel | switch | 107 | |
+| Device / outdoor / room filter changed | button | 157–159 | restarts the filter interval |
+| Reset faults | button | 405 | |
+| Sync clock | button | 100–105 | writes HA's local time in one request |
+
+### Repairs and diagnostics
+
+- A **repair issue** appears while the unit reports a fault (listing the decoded fault bits) and
+  while it asks for a filter change. Both disappear on their own once the unit stops reporting them.
+- **Download diagnostics** on the device page returns all raw registers, the decoded fault and
+  notice bits, the unit clock and the register blocks the unit does not support.
+
+---
+
+## Bus inputs
+
+Registers 707 (room temperature), 763 (humidity) and 764 (air quality, ppm) let Home Assistant
+supply sensor values to the unit. The unit uses them only for **10 minutes** after the last write.
+
+- Set a value with the *(bus)* number entities, **or**
+- choose source entities under **Settings → Devices & services → Maico KWL → Configure**. The value
+  is sent on every change; °F and ppb are converted.
+
+Every known value is written again every **5 minutes**. The room temperature is only used by the
+unit if *Room temperature source* is set to *Bus*.
 
 ---
 
 ## Installation
 
-### Prerequisites
+### Requirements
 
-- Home Assistant 2024.1 or newer
-- Maico WS 320 KBET (or compatible device) reachable on the local network
-- Modbus TCP enabled on the device (default port: 502, Modbus address: 10)
+- Home Assistant **2026.9** or newer.
+- Maico unit with Modbus TCP enabled (firmware **V1.1.1** or newer), default port 502,
+  default Modbus address 10.
+- No other program connected to the unit's Modbus TCP port (it accepts only one connection).
 
-### Manual Installation
+### HACS (custom repository)
 
-1. Download or clone this repository as ZIP.
-2. Copy the `custom_components/maico_kwl/` folder into the `<config>/custom_components/` directory of your Home Assistant installation.
-3. Restart Home Assistant.
+1. HACS → three dots → **Custom repositories** → add this repository, category **Integration**.
+2. Install *Maico KWL* and restart Home Assistant.
 
-### Installation via HACS (Custom Repository)
+### Manual
 
-1. Open HACS → **Integrations** → three dots in the top right → **Custom repositories**.
-2. Paste this repository's URL, category: **Integration**.
-3. Search for and install the integration, then restart HA.
-
----
+Copy `custom_components/maico_kwl/` into `<config>/custom_components/` and restart Home Assistant.
 
 ## Configuration
 
-1. In Home Assistant: **Settings → Devices & Services → Add Integration**.
-2. Search for "Maico KWL".
-3. Enter connection details:
+**Settings → Devices & services → Add integration → Maico KWL**, then enter host, port and Modbus
+address. Setup reads a few registers and refuses devices whose values do not match a Maico KWL.
 
-| Parameter | Default | Description |
-|---|---|---|
-| IP address / Host | – | IP of the ventilation unit |
-| Port | 502 | Modbus TCP port |
-| Modbus address (Slave ID) | 10 | Device address |
-| Update interval | 30 s | Polling rate |
+- **Reconfigure** (menu of the entry) changes host, port and Modbus address.
+- **Configure** sets the update interval (5–300 s, default 30 s) and the bus input sources.
 
 ---
 
-## Technical Details
+## Technical notes
 
-### Modbus Register Blocks
+### Modbus
 
-The integration cyclically reads the following register ranges:
+- All registers are holding registers, read with FC 03 in 12 blocks per poll. A block the unit
+  rejects as *illegal address/function* is skipped until the next reload; its entities are
+  unavailable.
+- **Writes use FC 16 (Write Multiple Registers).** According to the Maico documentation this is the
+  only write function the unit accepts over TCP (FC 06 is for RTU only).
+- 32-bit values are High-Word first.
+- Before anything is written, every poll checks that the identifying registers (108, 109, 550–554)
+  hold values a Maico KWL can have. A foreign device at the configured address is never written to.
 
-| Range | Registers | Content |
-|---|---|---|
-| Basic settings | 100–109 | Configuration, language, temperature source |
-| Ventilation settings | 150–159 | Setpoints |
-| Temperature settings | 300–302 | Target temperatures |
-| Error messages | 401–404 | Active errors |
-| Operating settings | 550–554 | Operating mode, season, level |
-| Ventilation status | 650–657 | Actual values: level, speed, flow rate, filter |
-| Temperatures | 700–706 | Current temperature readings |
-| Sensor data | 750–762 | Humidity (750–754), CO₂ (755–758), VOC (759–762) |
-| Switching states | 800–805 | Binary states |
-| Operating hours | 850–859 | 32-bit counters (high/low word) |
-| Filter monitoring | 900 | Filter status |
+### Deviations from the Maico documentation
 
-### Calculated Sensor – Heat Recovery
+| Registers | Documentation | Integration | Why |
+|---|---|---|---|
+| 750–754 humidity | ×10 | unscaled % | live units report e.g. 54 for 54 % |
+| 755–762 CO₂/VOC | ×10 | unscaled ppm | live unit reports e.g. 548 ppm |
+| 350–373 EnOcean | ×10 / 0–1000 | unscaled | by analogy, not checked on a unit |
+| 301 min. supply temperature | "step 1 = 0.1 °C" | whole °C | range 8–29, live units report e.g. 14 |
+| 401–404 bit fields | "Bitfeld" only | decoded | bit meanings from the Maico Geniovent list, which uses the same control |
 
+### Calculated values
+
+- **Heat recovery efficiency** η = (T<sub>supply</sub> − T<sub>intake</sub>) /
+  (T<sub>extract</sub> − T<sub>intake</sub>) × 100 %, clamped to 0–100 %. Not shown while the
+  summer bypass is open or the extract/intake difference is below 3 K.
+- **Heat recovery power** P = 0.335 Wh/(m³·K) × supply airflow × (T<sub>supply</sub> −
+  T<sub>intake</sub>); negative while the unit cools the supply air. Not shown while the bypass is
+  open. For energy (kWh) use an *Integral* helper on this sensor.
+
+---
+
+## Upgrading from 0.1.x
+
+- Existing entities are migrated to new unique IDs automatically: **entity IDs, names you set and
+  history stay**. The update interval moves from the entry data to the options.
+- **Select and enum states are now language-independent slugs** (e.g. `manual`, `nominal`,
+  `summer`) and are translated in the UI. Automations or templates that compare against the old
+  German texts (`Manuell`, `Nenn`, `Sommer`, …) must be changed to the slugs.
+- Fan speeds now use the unit `rpm` (was `U/min`); Home Assistant may ask once how to handle the
+  statistics of these two sensors.
+- New: fan entity, fault/notice decoding, repair issues, filter binary sensors, EnOcean and ZP1
+  registers, operating hours 860–869, heat recovery power, clock sync, bus input feeding, options
+  and reconfigure flows, diagnostics.
+
+## Development
+
+```bash
+pip install -r requirements_test.txt ruff
+ruff check custom_components tests && ruff format --check custom_components tests
+pytest
 ```
-η = (T_supply − T_outdoor) / (T_exhaust − T_outdoor) × 100 %
-```
 
-Not calculated when the temperature difference is < 0.5 K.
+The tests run against Home Assistant with an in-memory Modbus unit
+(`modbus_connection.mock`).
 
-### Modbus Specifics
+## Supported devices
 
-- Temperatures: raw value ÷ 10 (signed, 16-bit two's complement)
-- Operating hours: 32-bit (high word + low word in consecutive registers)
-- Writing negative values: `value & 0xFFFF`
-- Write-only bus registers: 707 (room temp), 763 (rel. humidity), 764 (CO₂/air quality)
-
----
-
-## Supported Devices
-
-Tested with:
-- **Maico WS 320 KBET**
-
-Potentially compatible with other Maico WS series devices, provided the Modbus registers match.
-
----
-
-## License
-
-This project is licensed under the [MIT License](LICENSE). It is a private, unofficial project and is not affiliated with Maico Ventilatoren GmbH & Co. KG.
+Tested with the **Maico WS 320 KBET**. Other Maico WS/WR units with the same control and Modbus
+TCP should work.

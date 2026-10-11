@@ -1,8 +1,8 @@
-"""Number-Entitäten (schreibbare Zahlenwerte) für die Maico KWL Integration."""
+"""Number entities for the Maico KWL integration."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 from homeassistant.components.number import (
     NumberDeviceClass,
@@ -10,359 +10,241 @@ from homeassistant.components.number import (
     NumberEntityDescription,
     NumberMode,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
-    CONF_HOST,
     PERCENTAGE,
+    EntityCategory,
+    UnitOfRatio,
     UnitOfTemperature,
     UnitOfTime,
     UnitOfVolumeFlowRate,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.exceptions import ServiceValidationError
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
+from . import registers as r
 from .const import DOMAIN
-from .coordinator import MaicoKWLCoordinator, to_int16
+from .coordinator import MaicoKWLConfigEntry, MaicoKWLCoordinator
+from .entity import MaicoEntity
 
-UNIT_M3H = "m³/h"
-UNIT_MONTHS = "Monate"
+PARALLEL_UPDATES = 1
 
 
 @dataclass(frozen=True, kw_only=True)
 class MaicoNumberEntityDescription(NumberEntityDescription):
-    """Beschreibung einer Maico KWL Number-Entität."""
+    """Describes a Maico KWL number."""
 
-    register: int = 0
-    scale: float = 1.0
-    signed: bool = False
-    write_only: bool = False  # True = kein Lesen aus Modbus
+    register: int
+    codec: r.Codec = r.U16
 
 
-# ── Schreib-/Lesbare Number-Entitäten ─────────────────────────────────────────
-NUMBER_DESCRIPTIONS: tuple[MaicoNumberEntityDescription, ...] = (
-    # Solltemperatur Raum
-    MaicoNumberEntityDescription(
-        key="solltemperatur_raum",
-        name="Solltemperatur Raum",
-        register=553,
-        scale=0.1,
-        signed=True,
-        native_min_value=18.0,
-        native_max_value=25.0,
-        native_step=0.5,
+def _temperature(
+    key: str,
+    register: int,
+    minimum: float,
+    maximum: float,
+    step: float,
+    *,
+    codec: r.Codec = r.S16_TENTHS,
+    category: EntityCategory | None = EntityCategory.CONFIG,
+) -> MaicoNumberEntityDescription:
+    return MaicoNumberEntityDescription(
+        key=key,
+        translation_key=key,
+        register=register,
+        codec=codec,
+        native_min_value=minimum,
+        native_max_value=maximum,
+        native_step=step,
         device_class=NumberDeviceClass.TEMPERATURE,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
         mode=NumberMode.BOX,
-        icon="mdi:thermometer-auto",
-    ),
-    # Abgleich Raumtemperatur
-    MaicoNumberEntityDescription(
-        key="abgleich_raumtemperatur",
-        name="Abgleich Raumtemperatur",
-        register=300,
-        scale=0.1,
-        signed=True,
-        native_min_value=-3.0,
-        native_max_value=3.0,
-        native_step=0.1,
-        device_class=NumberDeviceClass.TEMPERATURE,
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        entity_category=category,
+    )
+
+
+def _setting(
+    key: str,
+    register: int,
+    minimum: float,
+    maximum: float,
+    unit: str | None,
+    *,
+    device_class: NumberDeviceClass | None = None,
+) -> MaicoNumberEntityDescription:
+    return MaicoNumberEntityDescription(
+        key=key,
+        translation_key=key,
+        register=register,
+        native_min_value=minimum,
+        native_max_value=maximum,
+        native_step=1,
+        native_unit_of_measurement=unit,
+        device_class=device_class,
         mode=NumberMode.BOX,
-        icon="mdi:thermometer-check",
+        entity_category=EntityCategory.CONFIG,
+    )
+
+
+def _airflow(key: str, register: int) -> MaicoNumberEntityDescription:
+    # 80-300 m³/h are the general limits; the unit type may allow less.
+    return _setting(
+        key,
+        register,
+        80,
+        300,
+        UnitOfVolumeFlowRate.CUBIC_METERS_PER_HOUR,
+        device_class=NumberDeviceClass.VOLUME_FLOW_RATE,
+    )
+
+
+NUMBERS: tuple[MaicoNumberEntityDescription, ...] = (
+    _temperature(
+        "room_temperature_setpoint",
+        r.REG_ROOM_TEMPERATURE_SETPOINT,
+        18,
+        25,
+        0.5,
+        category=None,
     ),
-    # Zuluft Mindesttemperatur Kühlen
-    MaicoNumberEntityDescription(
-        key="zuluft_min_temp_kuehlen",
-        name="Zuluft Mindesttemperatur Kühlen",
-        register=301,
-        scale=1.0,
-        signed=True,
-        native_min_value=8.0,
-        native_max_value=29.0,
-        native_step=1.0,
-        device_class=NumberDeviceClass.TEMPERATURE,
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        mode=NumberMode.BOX,
-        icon="mdi:snowflake-thermometer",
+    _temperature("room_temperature_offset", r.REG_ROOM_TEMPERATURE_OFFSET, -3, 3, 0.1),
+    _temperature(
+        "supply_air_min_temperature_cooling",
+        r.REG_SUPPLY_AIR_MIN_TEMPERATURE_COOLING,
+        8,
+        29,
+        1,
+        codec=r.S16,
     ),
-    # Raum Maximaltemperatur
-    MaicoNumberEntityDescription(
-        key="raum_max_temperatur",
-        name="Raum Maximaltemperatur",
-        register=302,
-        scale=0.1,
-        signed=True,
-        native_min_value=18.0,
-        native_max_value=30.0,
-        native_step=0.5,
-        device_class=NumberDeviceClass.TEMPERATURE,
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        mode=NumberMode.BOX,
-        icon="mdi:thermometer-high",
-    ),
-    # Volumenstrom Reduzierte Lüftung
-    MaicoNumberEntityDescription(
-        key="volumenstrom_reduziert",
-        name="Volumenstrom Reduzierte Lüftung",
-        register=154,
-        native_min_value=80.0,
-        native_max_value=300.0,
-        native_step=10.0,
-        native_unit_of_measurement=UNIT_M3H,
-        mode=NumberMode.BOX,
-        icon="mdi:fan-minus",
-    ),
-    # Volumenstrom Nennlüftung
-    MaicoNumberEntityDescription(
-        key="volumenstrom_nenn",
-        name="Volumenstrom Nennlüftung",
-        register=155,
-        native_min_value=80.0,
-        native_max_value=300.0,
-        native_step=10.0,
-        native_unit_of_measurement=UNIT_M3H,
-        mode=NumberMode.BOX,
-        icon="mdi:fan",
-    ),
-    # Volumenstrom Intensivlüftung
-    MaicoNumberEntityDescription(
-        key="volumenstrom_intensiv",
-        name="Volumenstrom Intensivlüftung",
-        register=156,
-        native_min_value=80.0,
-        native_max_value=300.0,
-        native_step=10.0,
-        native_unit_of_measurement=UNIT_M3H,
-        mode=NumberMode.BOX,
-        icon="mdi:fan-plus",
-    ),
-    # Dauer Lüftungsstufe
-    MaicoNumberEntityDescription(
-        key="dauer_lueftungsstufe",
-        name="Dauer Lüftungsstufe",
-        register=153,
-        native_min_value=5.0,
-        native_max_value=90.0,
-        native_step=1.0,
+    _temperature("room_temperature_max", r.REG_ROOM_TEMPERATURE_MAX, 18, 30, 0.5),
+    _airflow("airflow_reduced", r.REG_AIRFLOW_REDUCED),
+    _airflow("airflow_nominal", r.REG_AIRFLOW_NOMINAL),
+    _airflow("airflow_intensive", r.REG_AIRFLOW_INTENSIVE),
+    _setting(
+        "ventilation_level_duration",
+        r.REG_VENTILATION_LEVEL_DURATION,
+        5,
+        90,
+        UnitOfTime.MINUTES,
         device_class=NumberDeviceClass.DURATION,
-        native_unit_of_measurement=UnitOfTime.MINUTES,
-        mode=NumberMode.BOX,
-        icon="mdi:timer-outline",
     ),
-    # Filterintervall Gerätefilter
-    MaicoNumberEntityDescription(
-        key="filterintervall_geraet",
-        name="Filterintervall Gerätefilter",
-        register=150,
-        native_min_value=3.0,
-        native_max_value=12.0,
-        native_step=1.0,
-        native_unit_of_measurement=UNIT_MONTHS,
-        mode=NumberMode.BOX,
-        icon="mdi:air-filter",
-    ),
-    # Filterintervall Außenfilter
-    MaicoNumberEntityDescription(
-        key="filterintervall_aussen",
-        name="Filterintervall Außenfilter",
-        register=151,
-        native_min_value=3.0,
-        native_max_value=18.0,
-        native_step=1.0,
-        native_unit_of_measurement=UNIT_MONTHS,
-        mode=NumberMode.BOX,
-        icon="mdi:air-filter",
-    ),
-    # Filterintervall Raumfilter
-    MaicoNumberEntityDescription(
-        key="filterintervall_raum",
-        name="Filterintervall Raumfilter",
-        register=152,
-        native_min_value=1.0,
-        native_max_value=6.0,
-        native_step=1.0,
-        native_unit_of_measurement=UNIT_MONTHS,
-        mode=NumberMode.BOX,
-        icon="mdi:air-filter",
-    ),
-    # Zulässige Druckdifferenz Filterüberwachung
-    MaicoNumberEntityDescription(
-        key="filter_druckdifferenz",
-        name="Filter Druckdifferenz Grenzwert",
-        register=900,
-        native_min_value=10.0,
-        native_max_value=200.0,
-        native_step=1.0,
-        native_unit_of_measurement=PERCENTAGE,
-        mode=NumberMode.BOX,
-        icon="mdi:gauge",
-    ),
+    # Months; the unit comes from the translations (UnitOfTime.MONTHS reads "m").
+    _setting("device_filter_interval", r.REG_DEVICE_FILTER_INTERVAL, 3, 12, None),
+    _setting("outdoor_filter_interval", r.REG_OUTDOOR_FILTER_INTERVAL, 3, 18, None),
+    _setting("room_filter_interval", r.REG_ROOM_FILTER_INTERVAL, 1, 6, None),
+    _setting("filter_pressure_limit", r.REG_FILTER_PRESSURE_LIMIT, 10, 200, PERCENTAGE),
 )
 
-# ── Schreib-Only Number-Entitäten (Bus-Eingangswerte) ─────────────────────────
-WRITE_ONLY_NUMBER_DESCRIPTIONS: tuple[MaicoNumberEntityDescription, ...] = (
-    # Raumtemperatur via Bus senden (für Auto-Sensor Modus)
+# Write-only inputs the unit uses instead of its own sensors (see bus.py).
+BUS_NUMBERS: tuple[MaicoNumberEntityDescription, ...] = (
     MaicoNumberEntityDescription(
-        key="bus_raumtemperatur",
-        name="Raumtemperatur Bus",
-        register=707,
-        scale=0.1,
-        signed=True,
-        write_only=True,
-        native_min_value=-30.0,
-        native_max_value=50.0,
+        key="bus_room_temperature",
+        translation_key="bus_room_temperature",
+        register=r.REG_BUS_ROOM_TEMPERATURE,
+        codec=r.S16_TENTHS,
+        native_min_value=-30,
+        native_max_value=120,
         native_step=0.1,
         device_class=NumberDeviceClass.TEMPERATURE,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
         mode=NumberMode.BOX,
-        icon="mdi:thermometer-bluetooth",
     ),
-    # Relative Feuchte via Bus senden
     MaicoNumberEntityDescription(
-        key="bus_feuchte",
-        name="Relative Feuchte Bus",
-        register=763,
-        write_only=True,
-        native_min_value=0.0,
-        native_max_value=100.0,
-        native_step=1.0,
+        key="bus_humidity",
+        translation_key="bus_humidity",
+        register=r.REG_BUS_HUMIDITY,
+        native_min_value=0,
+        native_max_value=100,
+        native_step=1,
         device_class=NumberDeviceClass.HUMIDITY,
         native_unit_of_measurement=PERCENTAGE,
         mode=NumberMode.BOX,
-        icon="mdi:water-percent-alert",
     ),
-    # CO2-/Luftqualität via Bus senden (Hauptwert zur KWL-Steuerung)
     MaicoNumberEntityDescription(
-        key="bus_co2",
-        name="CO₂-Wert Bus (Luftqualität)",
-        register=764,
-        write_only=True,
-        native_min_value=0.0,
-        native_max_value=5000.0,
-        native_step=1.0,
+        key="bus_air_quality",
+        translation_key="bus_air_quality",
+        register=r.REG_BUS_AIR_QUALITY,
+        native_min_value=0,
+        native_max_value=5000,
+        native_step=1,
         device_class=NumberDeviceClass.CO2,
-        native_unit_of_measurement="ppm",
+        native_unit_of_measurement=UnitOfRatio.PARTS_PER_MILLION,
         mode=NumberMode.BOX,
-        icon="mdi:molecule-co2",
     ),
 )
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    entry: MaicoKWLConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Richtet Number-Entitäten ein."""
-    coordinator: MaicoKWLCoordinator = hass.data[DOMAIN][entry.entry_id]
+    """Set up number entities."""
+    coordinator = entry.runtime_data
     entities: list[NumberEntity] = [
-        MaicoNumberEntity(coordinator, desc, entry)
-        for desc in NUMBER_DESCRIPTIONS
+        MaicoNumber(coordinator, description) for description in NUMBERS
     ]
-    entities += [
-        MaicoWriteOnlyNumberEntity(coordinator, desc, entry)
-        for desc in WRITE_ONLY_NUMBER_DESCRIPTIONS
-    ]
+    entities.extend(MaicoBusNumber(coordinator, description) for description in BUS_NUMBERS)
     async_add_entities(entities)
 
 
-class MaicoNumberEntity(CoordinatorEntity[MaicoKWLCoordinator], NumberEntity):
-    """Schreib-/lesbare Number-Entität."""
+class MaicoNumber(MaicoEntity, NumberEntity):
+    """A writable setting of the unit."""
 
     entity_description: MaicoNumberEntityDescription
-    _attr_has_entity_name = True
 
     def __init__(
         self,
         coordinator: MaicoKWLCoordinator,
         description: MaicoNumberEntityDescription,
-        entry: ConfigEntry,
     ) -> None:
-        """Initialisierung."""
-        super().__init__(coordinator)
-        self.entity_description = description
-        self._attr_unique_id = f"{entry.entry_id}_{description.key}"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)},
-            name="Maico KWL",
-            manufacturer="Maico",
-            model="WS 320 KBET",
-            configuration_url=f"http://{entry.data[CONF_HOST]}",
-        )
+        """Initialize the number."""
+        super().__init__(coordinator, description, (description.register,))
 
     @property
     def native_value(self) -> float | None:
-        """Gibt den aktuellen Wert zurück."""
-        data = self.coordinator.data
-        if not data:
-            return None
-        raw = data.get(self.entity_description.register)
-        if raw is None:
-            return None
-        if self.entity_description.signed:
-            raw = to_int16(raw)
-        return round(raw * self.entity_description.scale, 1)
+        """Return the current value."""
+        desc = self.entity_description
+        return r.read_value(self.coordinator.data, desc.register, desc.codec)
 
     async def async_set_native_value(self, value: float) -> None:
-        """Schreibt den neuen Wert ins Gerät."""
+        """Write a new value."""
         desc = self.entity_description
-        raw = round(value / desc.scale)
-        await self.coordinator.async_write_register(desc.register, raw)
-        await self.coordinator.async_request_refresh()
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        """Zusätzliche Attribute."""
-        return {"modbus_register": self.entity_description.register}
+        await self.coordinator.async_write(desc.register, desc.codec.encode(value))
 
 
-class MaicoWriteOnlyNumberEntity(NumberEntity):
-    """Schreib-only Number-Entität (kein Rücklesen aus Modbus)."""
+class MaicoBusNumber(MaicoEntity, NumberEntity):
+    """A write-only bus input; shows the value last sent."""
 
     entity_description: MaicoNumberEntityDescription
-    _attr_has_entity_name = True
-    _attr_should_poll = False
 
     def __init__(
         self,
         coordinator: MaicoKWLCoordinator,
         description: MaicoNumberEntityDescription,
-        entry: ConfigEntry,
     ) -> None:
-        """Initialisierung."""
-        self.coordinator = coordinator
-        self.entity_description = description
-        self._attr_unique_id = f"{entry.entry_id}_{description.key}"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)},
-            name="Maico KWL",
-            manufacturer="Maico",
-            model="WS 320 KBET",
-            configuration_url=f"http://{entry.data[CONF_HOST]}",
-        )
-        # Startwert: Mitte des Bereichs
-        self._native_value: float = description.native_min_value or 0.0
+        """Initialize the number."""
+        super().__init__(coordinator, description)
 
     @property
-    def native_value(self) -> float:
-        """Gibt den zuletzt gesendeten Wert zurück."""
-        return self._native_value
+    def native_value(self) -> float | None:
+        """Return the value last written."""
+        return self.coordinator.bus_values.get(self.entity_description.register)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, str | None]:
+        """Name the entity that feeds this input, if any."""
+        return {
+            "source_entity": self.coordinator.bus.source_entity(self.entity_description.register)
+        }
 
     async def async_set_native_value(self, value: float) -> None:
-        """Schreibt den Wert ins Gerät."""
-        desc = self.entity_description
-        raw = round(value / desc.scale)
-        success = await self.coordinator.async_write_register(desc.register, raw)
-        if success:
-            self._native_value = value
-            self.async_write_ha_state()
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        """Zusätzliche Attribute."""
-        return {
-            "modbus_register": self.entity_description.register,
-            "schreibzyklus_empfehlung": "mindestens alle 10 Minuten",
-        }
+        """Send a value to the unit; it is repeated until changed."""
+        register = self.entity_description.register
+        if source := self.coordinator.bus.source_entity(register):
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="bus_input_has_source",
+                translation_placeholders={"entity_id": source},
+            )
+        await self.coordinator.bus.async_set(register, value)

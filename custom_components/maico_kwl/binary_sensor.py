@@ -1,129 +1,179 @@
-"""Binäre Sensor-Entitäten für die Maico KWL Integration."""
+"""Binary sensor entities for the Maico KWL integration."""
+
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
 
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntity,
     BinarySensorEntityDescription,
 )
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_HOST
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from .const import DOMAIN
-from .coordinator import MaicoKWLCoordinator
+from . import registers as r
+from .coordinator import MaicoKWLConfigEntry, MaicoKWLCoordinator
+from .entity import MaicoEntity
+
+PARALLEL_UPDATES = 0
+
+type Data = dict[int, int]
 
 
 @dataclass(frozen=True, kw_only=True)
 class MaicoBinarySensorEntityDescription(BinarySensorEntityDescription):
-    """Beschreibung eines Maico KWL Binärsensors."""
+    """Describes a Maico KWL binary sensor."""
 
-    register: int = 0
-    on_value: int = 1  # Welcher Wert bedeutet "an/wahr"
+    registers: tuple[int, ...]
+    is_on_fn: Callable[[Data], bool | None]
+    enabled_fn: Callable[[Data], bool] | None = None
 
 
-BINARY_SENSOR_DESCRIPTIONS: tuple[MaicoBinarySensorEntityDescription, ...] = (
+def _flag(address: int) -> Callable[[Data], bool | None]:
+    return lambda data: None if (raw := data.get(address)) is None else raw == 1
+
+
+def _bit(address: int, bit: int) -> Callable[[Data], bool | None]:
+    def is_on(data: Data) -> bool | None:
+        value = r.read_value(data, address, r.U32)
+        return None if value is None else bool(int(value) >> bit & 1)
+
+    return is_on
+
+
+def _notice_bit(slug: str) -> int:
+    return next(bit for bit, name in r.NOTICE_BITS.items() if name == slug)
+
+
+_NOTICE = (r.REG_NOTICE, r.REG_NOTICE + 1)
+
+BINARY_SENSORS: tuple[MaicoBinarySensorEntityDescription, ...] = (
     MaicoBinarySensorEntityDescription(
-        key="ventilator_zuluft",
-        name="Zuluftventilator",
-        register=800,
+        key="supply_fan_running",
+        translation_key="supply_fan_running",
+        registers=(r.REG_SUPPLY_FAN_RUNNING,),
+        is_on_fn=_flag(r.REG_SUPPLY_FAN_RUNNING),
         device_class=BinarySensorDeviceClass.RUNNING,
-        icon="mdi:fan",
     ),
     MaicoBinarySensorEntityDescription(
-        key="ventilator_abluft",
-        name="Abluftventilator",
-        register=801,
+        key="exhaust_fan_running",
+        translation_key="exhaust_fan_running",
+        registers=(r.REG_EXHAUST_FAN_RUNNING,),
+        is_on_fn=_flag(r.REG_EXHAUST_FAN_RUNNING),
         device_class=BinarySensorDeviceClass.RUNNING,
-        icon="mdi:fan",
     ),
     MaicoBinarySensorEntityDescription(
-        key="sommerbypass",
-        name="Sommerbypass",
-        register=802,
+        key="summer_bypass",
+        translation_key="summer_bypass",
+        registers=(r.REG_SUMMER_BYPASS,),
+        is_on_fn=_flag(r.REG_SUMMER_BYPASS),
         device_class=BinarySensorDeviceClass.OPENING,
-        icon="mdi:valve-open",
     ),
     MaicoBinarySensorEntityDescription(
-        key="ptc_heizregister",
-        name="PTC-Heizregister",
-        register=803,
+        key="ptc_heater",
+        translation_key="ptc_heater",
+        registers=(r.REG_PTC_HEATER,),
+        is_on_fn=_flag(r.REG_PTC_HEATER),
         device_class=BinarySensorDeviceClass.HEAT,
-        icon="mdi:heating-coil",
     ),
     MaicoBinarySensorEntityDescription(
-        key="schaltkontakt_basisplatine",
-        name="Schaltkontakt Basisplatine",
-        register=804,
+        key="base_board_contact",
+        translation_key="base_board_contact",
+        registers=(r.REG_BASE_BOARD_CONTACT,),
+        is_on_fn=_flag(r.REG_BASE_BOARD_CONTACT),
         device_class=BinarySensorDeviceClass.POWER,
-        icon="mdi:electric-switch",
+        entity_category=EntityCategory.DIAGNOSTIC,
     ),
     MaicoBinarySensorEntityDescription(
-        key="relais_nachheizung",
-        name="Relais Nachheizung",
-        register=805,
+        key="reheating_relay",
+        translation_key="reheating_relay",
+        registers=(r.REG_REHEATING_RELAY,),
+        is_on_fn=_flag(r.REG_REHEATING_RELAY),
         device_class=BinarySensorDeviceClass.HEAT,
-        icon="mdi:radiator",
+        entity_registry_enabled_default=False,
+    ),
+    MaicoBinarySensorEntityDescription(
+        key="fault",
+        translation_key="fault",
+        registers=(r.REG_FAULT, r.REG_FAULT + 1),
+        is_on_fn=lambda data: (
+            None if (v := r.read_value(data, r.REG_FAULT, r.U32)) is None else v != 0
+        ),
+        device_class=BinarySensorDeviceClass.PROBLEM,
+    ),
+    MaicoBinarySensorEntityDescription(
+        key="device_filter_due",
+        translation_key="device_filter_due",
+        registers=_NOTICE,
+        is_on_fn=_bit(r.REG_NOTICE, _notice_bit("device_filter_due")),
+        device_class=BinarySensorDeviceClass.PROBLEM,
+    ),
+    MaicoBinarySensorEntityDescription(
+        key="outdoor_filter_due",
+        translation_key="outdoor_filter_due",
+        registers=_NOTICE,
+        is_on_fn=_bit(r.REG_NOTICE, _notice_bit("outdoor_filter_due")),
+        device_class=BinarySensorDeviceClass.PROBLEM,
+        enabled_fn=lambda data: bool(data.get(r.REG_OUTDOOR_FILTER_REMAINING)),
+    ),
+    MaicoBinarySensorEntityDescription(
+        key="room_filter_due",
+        translation_key="room_filter_due",
+        registers=_NOTICE,
+        is_on_fn=_bit(r.REG_NOTICE, _notice_bit("room_filter_due")),
+        device_class=BinarySensorDeviceClass.PROBLEM,
+        enabled_fn=lambda data: bool(data.get(r.REG_ROOM_FILTER_REMAINING)),
+    ),
+    MaicoBinarySensorEntityDescription(
+        key="frost_protection",
+        translation_key="frost_protection",
+        registers=_NOTICE,
+        is_on_fn=_bit(r.REG_NOTICE, _notice_bit("frost_protection_active")),
+        device_class=BinarySensorDeviceClass.COLD,
+    ),
+    MaicoBinarySensorEntityDescription(
+        key="humidity_protection",
+        translation_key="humidity_protection",
+        registers=_NOTICE,
+        is_on_fn=_bit(r.REG_NOTICE, _notice_bit("humidity_protection_active")),
+        device_class=BinarySensorDeviceClass.RUNNING,
     ),
 )
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    entry: MaicoKWLConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Richtet Binärsensor-Entitäten ein."""
-    coordinator: MaicoKWLCoordinator = hass.data[DOMAIN][entry.entry_id]
+    """Set up binary sensor entities."""
+    coordinator = entry.runtime_data
     async_add_entities(
-        MaicoBinarySensorEntity(coordinator, description, entry)
-        for description in BINARY_SENSOR_DESCRIPTIONS
+        MaicoBinarySensor(coordinator, description) for description in BINARY_SENSORS
     )
 
 
-class MaicoBinarySensorEntity(
-    CoordinatorEntity[MaicoKWLCoordinator], BinarySensorEntity
-):
-    """Repräsentiert einen Maico KWL Binärsensor."""
+class MaicoBinarySensor(MaicoEntity, BinarySensorEntity):
+    """A Maico KWL binary sensor."""
 
     entity_description: MaicoBinarySensorEntityDescription
-    _attr_has_entity_name = True
 
     def __init__(
         self,
         coordinator: MaicoKWLCoordinator,
         description: MaicoBinarySensorEntityDescription,
-        entry: ConfigEntry,
     ) -> None:
-        """Initialisierung."""
-        super().__init__(coordinator)
-        self.entity_description = description
-        self._attr_unique_id = f"{entry.entry_id}_{description.key}"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)},
-            name="Maico KWL",
-            manufacturer="Maico",
-            model="WS 320 KBET",
-            configuration_url=f"http://{entry.data[CONF_HOST]}",
-        )
+        """Initialize the binary sensor."""
+        super().__init__(coordinator, description, description.registers)
+        if description.enabled_fn is not None:
+            self._attr_entity_registry_enabled_default = bool(
+                coordinator.data and description.enabled_fn(coordinator.data)
+            )
 
     @property
     def is_on(self) -> bool | None:
-        """Gibt den aktuellen Zustand zurück."""
-        if not self.coordinator.data:
-            return None
-        raw = self.coordinator.data.get(self.entity_description.register)
-        if raw is None:
-            return None
-        return raw == self.entity_description.on_value
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        """Zusätzliche Attribute."""
-        return {"modbus_register": self.entity_description.register}
+        """Return the state."""
+        return self.entity_description.is_on_fn(self.coordinator.data)
