@@ -7,9 +7,9 @@
 Unofficial Home Assistant custom integration for **Maico WS/WR ventilation units** (controlled
 residential ventilation, e.g. WS 320 KBET) via **Modbus TCP**.
 
-The integration uses the shared Modbus connections Home Assistant introduced in **2026.9**
-(`modbus.async_get_unit`). The unit accepts only one Modbus TCP connection; all integrations that
-use the shared API for the same unit share that one connection.
+The integration keeps its own Modbus TCP connection to the unit (pymodbus). The unit accepts only
+one connection, and a slow one at that, so all reads and writes of an entry go one after the other
+through that connection.
 
 ---
 
@@ -118,7 +118,6 @@ unit if *Room temperature source* is set to *Bus*.
 
 ### Requirements
 
-- Home Assistant **2026.9** or newer.
 - Maico unit with Modbus TCP enabled (firmware **V1.1.1** or newer), default port 502,
   default Modbus address 10.
 - No other program connected to the unit's Modbus TCP port (it accepts only one connection).
@@ -138,7 +137,7 @@ Copy `custom_components/maico_kwl/` into `<config>/custom_components/` and resta
 address. Setup reads a few registers and refuses devices whose values do not match a Maico KWL.
 
 - **Reconfigure** (menu of the entry) changes host, port and Modbus address.
-- **Configure** sets the update interval (5–300 s, default 30 s) and the bus input sources.
+- **Configure** changes the host/IP address (the unit is tested first), the update interval (10–300 s, default 30 s) and sets the bus input sources.
 
 ---
 
@@ -146,9 +145,19 @@ address. Setup reads a few registers and refuses devices whose values do not mat
 
 ### Modbus
 
-- All registers are holding registers, read with FC 03 in 12 blocks per poll. A block the unit
-  rejects as *illegal address/function* is skipped until the next reload; its entities are
+- All registers are holding registers, read with FC 03. The 12 register blocks are merged into 5
+  requests per poll (neighbouring blocks are read together, the gaps in between are discarded). If
+  the unit rejects a merged request as *illegal address/function*, the blocks inside it are read one
+  by one; a block that is rejected on its own is skipped until the next reload and its entities are
   unavailable.
+- **One serialized connection.** Timeout 3 s, one retry. If the connection is gone it is rebuilt;
+  after a failed attempt the next one waits 5, 15, 30, then 60 s. A poll that fails stops at the
+  first error and keeps the last values. Only after 3 failed polls in a row the entities become
+  unavailable. One warning is logged when the unit stops answering and one message when it is back.
+- **Bus inputs are throttled**: at most one write per input every 30 s, only while the connection
+  is up, and only if the value changed (CO₂: by at least 25 ppm) or nothing was written for
+  5 minutes. A failed write is not queued; the newest value goes out at the next opportunity.
+- Entities only write a new state when one of their registers changed.
 - **Writes use FC 16 (Write Multiple Registers).** According to the Maico documentation this is the
   only write function the unit accepts over TCP (FC 06 is for RTU only).
 - 32-bit values are High-Word first.
@@ -203,8 +212,8 @@ ruff check custom_components tests && ruff format --check custom_components test
 pytest
 ```
 
-The tests run against Home Assistant with an in-memory Modbus unit
-(`modbus_connection.mock`).
+The tests run against Home Assistant with an in-memory unit; the connection handling is tested
+against a local Modbus TCP server that closes the connection or stops answering.
 
 ## Supported devices
 

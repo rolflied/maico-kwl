@@ -44,18 +44,26 @@
       "init": {
         "title": "Maico KWL options",
         "data": {
+          "host": "Host",
           "scan_interval": "Update interval",
           "bus_temperature_entity": "Room temperature source for the bus input",
           "bus_humidity_entity": "Humidity source for the bus input",
           "bus_air_quality_entity": "CO₂ source for the bus input"
         },
         "data_description": {
+          "host": "IP address or host name of the ventilation unit. The unit is tested before the change is saved.",
           "scan_interval": "How often the unit is polled.",
           "bus_temperature_entity": "Sent to register 707 on every change and at least every 5 minutes. The unit only uses it with room temperature source *Bus*.",
           "bus_humidity_entity": "Sent to register 763 on every change and at least every 5 minutes.",
           "bus_air_quality_entity": "Sent to register 764 (ppm) on every change and at least every 5 minutes."
         }
       }
+    },
+    "error": {
+      "cannot_connect": "Could not connect to the unit. Check host, port and Modbus address, and that no other program holds the unit's only Modbus TCP connection.",
+      "not_maico": "The device answers, but its values do not match a Maico KWL. Check the address.",
+      "unknown": "Unexpected error, see the log.",
+      "already_configured": "This unit is already configured."
     }
   },
   "entity": {

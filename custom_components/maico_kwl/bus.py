@@ -3,6 +3,11 @@
 The unit only uses a bus value for 10 minutes, so every known value is written
 again every few minutes. Values come from the bus number entities or from
 Home Assistant entities chosen in the options.
+
+Writes are throttled: at most one per input every 30 s, and only while the
+connection is up. A value is written when it differs enough from the last
+written one (25 ppm for CO2) or when nothing was written for 5 minutes. A failed
+write is not queued; the next opportunity sends whatever value is newest.
 """
 
 from __future__ import annotations
@@ -11,6 +16,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
 import logging
+import time
 
 from homeassistant.const import (
     ATTR_UNIT_OF_MEASUREMENT,
@@ -34,6 +40,7 @@ from .const import (
 )
 from .coordinator import MaicoKWLConfigEntry, MaicoKWLCoordinator
 from .registers import (
+    BUS_MIN_WRITE_INTERVAL_SECONDS,
     BUS_REFRESH_SECONDS,
     REG_BUS_AIR_QUALITY,
     REG_BUS_HUMIDITY,
@@ -84,7 +91,11 @@ class BusInput:
     maximum: float
     option: str
     convert: Callable[[State], float | None]
+    # A value is only written again if it moved at least this much.
+    min_change: float = 0.0
 
+
+BUS_MIN_CHANGE_CO2_PPM = 25.0
 
 BUS_INPUTS: tuple[BusInput, ...] = (
     BusInput(
@@ -96,7 +107,15 @@ BUS_INPUTS: tuple[BusInput, ...] = (
         _temperature,
     ),
     BusInput(REG_BUS_HUMIDITY, U16, 0.0, 100.0, CONF_BUS_HUMIDITY_ENTITY, _humidity),
-    BusInput(REG_BUS_AIR_QUALITY, U16, 0.0, 5000.0, CONF_BUS_AIR_QUALITY_ENTITY, _air_quality),
+    BusInput(
+        REG_BUS_AIR_QUALITY,
+        U16,
+        0.0,
+        5000.0,
+        CONF_BUS_AIR_QUALITY_ENTITY,
+        _air_quality,
+        min_change=BUS_MIN_CHANGE_CO2_PPM,
+    ),
 )
 BUS_INPUTS_BY_ADDRESS = {bus.address: bus for bus in BUS_INPUTS}
 
@@ -115,6 +134,8 @@ class MaicoBusFeeder:
         self.entry = entry
         self.coordinator = coordinator
         self._listeners: list[Callable[[], None]] = []
+        # address -> (value, monotonic time) of the last successful write.
+        self._written: dict[int, tuple[float, float]] = {}
 
     def source_entity(self, address: int) -> str | None:
         """The entity configured as source of a bus input."""
@@ -137,7 +158,7 @@ class MaicoBusFeeder:
             async_track_time_interval(
                 self.hass,
                 self._async_refresh,
-                timedelta(seconds=BUS_REFRESH_SECONDS),
+                timedelta(seconds=BUS_MIN_WRITE_INTERVAL_SECONDS),
                 name="maico_kwl bus refresh",
             )
         )
@@ -171,7 +192,7 @@ class MaicoBusFeeder:
 
     @callback
     def _async_source_changed(self, event: Event[EventStateChangedData]) -> None:
-        """Write a changed source value."""
+        """Remember a changed source value and write it if the throttle allows."""
         if (state := event.data["new_state"]) is None:
             return
         for bus in BUS_INPUTS:
@@ -181,25 +202,40 @@ class MaicoBusFeeder:
                 )
 
     async def async_set(self, address: int, value: float) -> None:
-        """Set a bus input from a number entity and write it."""
+        """Set a bus input from a number entity and write it right away."""
         bus = BUS_INPUTS_BY_ADDRESS[address]
         self.coordinator.bus_values[address] = value
-        await self._async_write(bus, raise_on_error=True)
+        await self._async_write(bus, raise_on_error=True, force=True)
 
-    async def _async_write(self, bus: BusInput, raise_on_error: bool = False) -> None:
+    def _is_due(self, bus: BusInput, value: float) -> bool:
+        """Whether the throttle allows writing this value now."""
+        if not self.coordinator.client.connected:
+            return False
+        if (last := self._written.get(bus.address)) is None:
+            return True
+        last_value, last_time = last
+        age = time.monotonic() - last_time
+        if age < BUS_MIN_WRITE_INTERVAL_SECONDS:
+            return False
+        return age >= BUS_REFRESH_SECONDS or abs(value - last_value) >= max(bus.min_change, 1e-9)
+
+    async def _async_write(
+        self, bus: BusInput, raise_on_error: bool = False, force: bool = False
+    ) -> None:
         value = self.coordinator.bus_values.get(bus.address)
-        if value is None:
+        if value is None or not (force or self._is_due(bus, value)):
             return
         try:
             await self.coordinator.async_write(bus.address, bus.codec.encode(value))
         except HomeAssistantError as err:
             if raise_on_error:
                 raise
-            _LOGGER.warning("Writing bus input %d failed: %s", bus.address, err)
+            _LOGGER.debug("Writing bus input %d failed: %s", bus.address, err)
         else:
+            self._written[bus.address] = (value, time.monotonic())
             self.coordinator.async_update_listeners()
 
     async def _async_refresh(self, _now: object = None) -> None:
-        """Write every known bus value again before the unit forgets it."""
+        """Write what is due: changed values and those about to be forgotten."""
         for bus in BUS_INPUTS:
             await self._async_write(bus)
