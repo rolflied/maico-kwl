@@ -5,10 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from modbus_connection import ModbusError
 import voluptuous as vol
 
-from homeassistant.components.modbus import async_get_temporary_unit
 from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.config_entries import (
     ConfigEntry,
@@ -20,7 +18,6 @@ from homeassistant.config_entries import (
 from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import AbortFlow
-from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.selector import (
     EntitySelector,
     EntitySelectorConfig,
@@ -30,7 +27,7 @@ from homeassistant.helpers.selector import (
     TextSelector,
 )
 
-from . import create_modbus_params
+from .client import MaicoModbusClient, MaicoModbusError
 from .const import (
     CONF_BUS_AIR_QUALITY_ENTITY,
     CONF_BUS_HUMIDITY_ENTITY,
@@ -69,20 +66,20 @@ CONNECTION_SCHEMA = vol.Schema(
 
 async def validate_connection(hass: HomeAssistant, data: dict[str, Any]) -> str | None:
     """Read the identifying registers; return an error key or None."""
+    client = MaicoModbusClient(data[CONF_HOST], data[CONF_PORT], data[CONF_SLAVE])
     try:
-        async with async_get_temporary_unit(
-            hass, create_modbus_params(data), data[CONF_SLAVE]
-        ) as unit:
-            values: dict[int, int] = {}
-            for start, count in IDENTITY_BLOCKS:
-                words = await unit.read_holding_registers(start, count)
-                values.update(zip(range(start, start + count), words, strict=False))
-    except (HomeAssistantError, ModbusError):
+        values: dict[int, int] = {}
+        for start, count in IDENTITY_BLOCKS:
+            words = await client.read_holding_registers(start, count)
+            values.update(zip(range(start, start + count), words, strict=False))
+    except MaicoModbusError:
         _LOGGER.debug("Cannot connect to Maico KWL", exc_info=True)
         return "cannot_connect"
     except Exception:
         _LOGGER.exception("Unexpected error while connecting to Maico KWL")
         return "unknown"
+    finally:
+        await client.async_close()
     if problem := identity_problem(values):
         _LOGGER.warning("Device does not look like a Maico KWL: %s", problem)
         return "not_maico"
@@ -191,7 +188,7 @@ class MaicoKWLOptionsFlow(OptionsFlowWithReload):
         schema = vol.Schema(
             {
                 vol.Required(CONF_HOST): TextSelector(),
-                vol.Required(CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL): _box(5, 300, "s"),
+                vol.Required(CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL): _box(10, 300, "s"),
                 vol.Optional(CONF_BUS_TEMPERATURE_ENTITY): _source(SensorDeviceClass.TEMPERATURE),
                 vol.Optional(CONF_BUS_HUMIDITY_ENTITY): _source(SensorDeviceClass.HUMIDITY),
                 vol.Optional(CONF_BUS_AIR_QUALITY_ENTITY): _source(SensorDeviceClass.CO2),

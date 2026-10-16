@@ -2,20 +2,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from datetime import timedelta
+from types import SimpleNamespace
+from unittest.mock import patch
 
-from modbus_connection import (
-    IllegalDataAddressError,
-    ModbusConnectionError,
-    ServerDeviceBusyError,
-)
-from modbus_connection.mock import MockModbusUnit, WriteEvent
 import pytest
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_fire_time_changed,
 )
 
+from custom_components.maico_kwl.client import MaicoConnectionError
 from custom_components.maico_kwl.const import CONF_SCAN_INTERVAL, CONF_SLAVE, DOMAIN
 from custom_components.maico_kwl.diagnostics import async_get_config_entry_diagnostics
 from homeassistant.config_entries import ConfigEntryState
@@ -26,6 +24,8 @@ from homeassistant.helpers import entity_registry as er, issue_registry as ir
 from homeassistant.loader import async_get_integration
 from homeassistant.util import dt as dt_util
 
+from .conftest import FakeUnit, WriteEvent, busy, illegal_address
+
 
 async def _setup(hass: HomeAssistant, entry: MockConfigEntry) -> None:
     entry.add_to_hass(hass)
@@ -33,14 +33,14 @@ async def _setup(hass: HomeAssistant, entry: MockConfigEntry) -> None:
     await hass.async_block_till_done()
 
 
-def _writes(unit: MockModbusUnit) -> list[WriteEvent]:
+def _writes(unit: FakeUnit) -> list[WriteEvent]:
     events: list[WriteEvent] = []
     unit.on_write(events.append)
     return events
 
 
 async def test_setup_and_states(
-    hass: HomeAssistant, patch_unit: MockModbusUnit, config_entry: MockConfigEntry
+    hass: HomeAssistant, patch_unit: FakeUnit, config_entry: MockConfigEntry
 ) -> None:
     """Entities reflect the registers."""
     await _setup(hass, config_entry)
@@ -73,7 +73,7 @@ async def test_setup_and_states(
 
 
 async def test_writes_use_fc16(
-    hass: HomeAssistant, patch_unit: MockModbusUnit, config_entry: MockConfigEntry
+    hass: HomeAssistant, patch_unit: FakeUnit, config_entry: MockConfigEntry
 ) -> None:
     """Every write goes out as Write Multiple Registers."""
     await _setup(hass, config_entry)
@@ -103,7 +103,7 @@ async def test_writes_use_fc16(
 
 
 async def test_fan(
-    hass: HomeAssistant, patch_unit: MockModbusUnit, config_entry: MockConfigEntry
+    hass: HomeAssistant, patch_unit: FakeUnit, config_entry: MockConfigEntry
 ) -> None:
     """Speed switches to manual, off sets the mode off, on restores it."""
     patch_unit.holding[550] = 3  # auto sensor
@@ -135,11 +135,11 @@ async def test_fan(
 
 
 async def test_write_error(
-    hass: HomeAssistant, patch_unit: MockModbusUnit, config_entry: MockConfigEntry
+    hass: HomeAssistant, patch_unit: FakeUnit, config_entry: MockConfigEntry
 ) -> None:
     """A failed write is reported to the caller."""
     await _setup(hass, config_entry)
-    patch_unit.fail_write(551, ModbusConnectionError("gone"))
+    patch_unit.fail_write(551, MaicoConnectionError("gone"))
     with pytest.raises(HomeAssistantError, match="551"):
         await hass.services.async_call(
             "switch",
@@ -150,29 +150,93 @@ async def test_write_error(
 
 
 async def test_unsupported_block(
-    hass: HomeAssistant, patch_unit: MockModbusUnit, config_entry: MockConfigEntry
+    hass: HomeAssistant, patch_unit: FakeUnit, config_entry: MockConfigEntry
 ) -> None:
     """A rejected block is skipped, its entities become unavailable."""
-    patch_unit.fail_read(350, IllegalDataAddressError())
+    patch_unit.fail_read(350, illegal_address())
     await _setup(hass, config_entry)
     assert config_entry.state is ConfigEntryState.LOADED
     assert config_entry.runtime_data.unsupported_blocks == {(350, 24)}
     assert hass.states.get("sensor.maico_kwl_co2_sensor_1").state == "548"
 
 
-async def test_connection_lost(
-    hass: HomeAssistant, patch_unit: MockModbusUnit, config_entry: MockConfigEntry
-) -> None:
-    """Entities go unavailable while the unit does not answer."""
-    await _setup(hass, config_entry)
-    patch_unit.fail_requests(ModbusConnectionError("down"))
-    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=31))
+async def _poll(hass: HomeAssistant, cycle: int) -> None:
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=31 * cycle))
     await hass.async_block_till_done()
+
+
+async def test_connection_lost(
+    hass: HomeAssistant,
+    patch_unit: FakeUnit,
+    config_entry: MockConfigEntry,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Values are kept for two failed cycles, then unavailable; one warning per outage."""
+    await _setup(hass, config_entry)
+    patch_unit.fail_requests(MaicoConnectionError("down"))
+    patch_unit.reads.clear()
+
+    for cycle in (1, 2):
+        await _poll(hass, cycle)
+        assert hass.states.get("sensor.maico_kwl_supply_fan_speed").state == "1239"
+    # A failed cycle stops at the first request instead of trying every block.
+    assert len(patch_unit.reads) == 2
+
+    await _poll(hass, 3)
     assert hass.states.get("sensor.maico_kwl_supply_fan_speed").state == STATE_UNAVAILABLE
+    await _poll(hass, 4)
+    warnings = [
+        r
+        for r in caplog.records
+        if r.levelname == "WARNING" and r.name.startswith("custom_components.maico_kwl")
+    ]
+    assert len(warnings) == 1
+
+    patch_unit.fail_requests(None)
+    await _poll(hass, 5)
+    assert hass.states.get("sensor.maico_kwl_supply_fan_speed").state == "1239"
+    assert "answers again after 4 failed polls" in caplog.text
+
+
+async def test_first_poll_fails(
+    hass: HomeAssistant, patch_unit: FakeUnit, config_entry: MockConfigEntry
+) -> None:
+    """Without any data the setup is retried."""
+    patch_unit.fail_requests(MaicoConnectionError("down"))
+    config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(config_entry.entry_id)
+    assert config_entry.state is ConfigEntryState.SETUP_RETRY
+
+
+async def test_few_requests(
+    hass: HomeAssistant, patch_unit: FakeUnit, config_entry: MockConfigEntry
+) -> None:
+    """The 12 register blocks are read with 5 requests."""
+    await _setup(hass, config_entry)
+    assert len(patch_unit.reads) == 5
+    assert all(count <= 125 for _, count in patch_unit.reads)
+
+
+async def test_unchanged_poll_writes_no_states(
+    hass: HomeAssistant, patch_unit: FakeUnit, config_entry: MockConfigEntry
+) -> None:
+    """Only entities whose registers changed get a new state."""
+    await _setup(hass, config_entry)
+    changed: list[str] = []
+    hass.bus.async_listen(
+        "state_changed",
+        lambda event: changed.append(event.data["entity_id"]),
+    )
+    await _poll(hass, 1)
+    assert changed == []
+
+    patch_unit.holding[651] = 1300  # supply fan speed
+    await _poll(hass, 2)
+    assert changed == ["sensor.maico_kwl_supply_fan_speed"]
 
 
 async def test_not_maico(
-    hass: HomeAssistant, patch_unit: MockModbusUnit, config_entry: MockConfigEntry
+    hass: HomeAssistant, patch_unit: FakeUnit, config_entry: MockConfigEntry
 ) -> None:
     """A device with foreign values is not set up."""
     patch_unit.holding[550] = 77
@@ -182,7 +246,7 @@ async def test_not_maico(
 
 
 async def test_fault_issue(
-    hass: HomeAssistant, patch_unit: MockModbusUnit, config_entry: MockConfigEntry
+    hass: HomeAssistant, patch_unit: FakeUnit, config_entry: MockConfigEntry
 ) -> None:
     """An active fault raises an issue and is decoded."""
     patch_unit.holding[402] = 0b11
@@ -194,10 +258,38 @@ async def test_fault_issue(
     assert ir.async_get(hass).async_get_issue(DOMAIN, f"fault_{config_entry.entry_id}")
 
 
+class Clock:
+    """A settable replacement for time.monotonic."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+@pytest.fixture
+def clock() -> Generator[Clock]:
+    """Control the clock the bus throttle uses."""
+    clock = Clock()
+    with patch("custom_components.maico_kwl.bus.time", SimpleNamespace(monotonic=clock)):
+        yield clock
+
+
+def _bus_writes(writes: list[WriteEvent], address: int) -> list[list[int]]:
+    return [w.values for w in writes if w.address == address]
+
+
+async def _fire(hass: HomeAssistant, clock: Clock, seconds: float) -> None:
+    clock.now += seconds
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=clock.now - 1000))
+    await hass.async_block_till_done()
+
+
 async def test_bus_feed(
-    hass: HomeAssistant, patch_unit: MockModbusUnit, config_entry: MockConfigEntry
+    hass: HomeAssistant, patch_unit: FakeUnit, config_entry: MockConfigEntry, clock: Clock
 ) -> None:
-    """A source entity feeds the bus input and is repeated."""
+    """A source entity feeds the bus input; it is throttled and repeated."""
     hass.states.async_set(
         "sensor.living_room",
         "68.0",
@@ -211,25 +303,83 @@ async def test_bus_feed(
     writes = _writes(patch_unit)
     assert await hass.config_entries.async_setup(config_entry.entry_id)
     await hass.async_block_till_done()
-    assert (707, [200]) in [(w.address, w.values) for w in writes]
+    assert _bus_writes(writes, 707) == [[200]]
     assert hass.states.get("number.maico_kwl_room_temperature_bus").state == "20.0"
 
-    writes.clear()
+    # A change within 30 s waits; the next tick sends the newest value only.
+    hass.states.async_set(
+        "sensor.living_room",
+        "70.0",
+        {"unit_of_measurement": "°F", "device_class": "temperature"},
+    )
     hass.states.async_set(
         "sensor.living_room",
         "71.6",
         {"unit_of_measurement": "°F", "device_class": "temperature"},
     )
     await hass.async_block_till_done()
-    assert [(w.address, w.values) for w in writes] == [(707, [220])]
+    assert _bus_writes(writes, 707) == [[200]]
+    await _fire(hass, clock, 31)
+    assert _bus_writes(writes, 707) == [[200], [220]]
 
-    writes.clear()
-    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=5, seconds=1))
+    # Unchanged values are repeated after 5 minutes.
+    await _fire(hass, clock, 120)
+    assert _bus_writes(writes, 707) == [[200], [220]]
+    await _fire(hass, clock, 181)
+    assert _bus_writes(writes, 707) == [[200], [220], [220]]
+
+
+async def test_co2_write_is_throttled(
+    hass: HomeAssistant, patch_unit: FakeUnit, config_entry: MockConfigEntry, clock: Clock
+) -> None:
+    """CO2 is written for >= 25 ppm, at most every 30 s, else every 5 minutes."""
+    attrs = {"unit_of_measurement": "ppm", "device_class": "carbon_dioxide"}
+    hass.states.async_set("sensor.co2", "500", attrs)
+    config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        config_entry, options={**config_entry.options, "bus_air_quality_entity": "sensor.co2"}
+    )
+    writes = _writes(patch_unit)
+    assert await hass.config_entries.async_setup(config_entry.entry_id)
     await hass.async_block_till_done()
-    assert (707, [220]) in [(w.address, w.values) for w in writes]
+    assert _bus_writes(writes, 764) == [[500]]
+
+    # Big jump right away: too soon.
+    hass.states.async_set("sensor.co2", "600", attrs)
+    await hass.async_block_till_done()
+    assert _bus_writes(writes, 764) == [[500]]
+
+    # After 30 s it goes out; small drifts after that do not.
+    await _fire(hass, clock, 31)
+    assert _bus_writes(writes, 764) == [[500], [600]]
+    hass.states.async_set("sensor.co2", "620", attrs)
+    await _fire(hass, clock, 31)
+    assert _bus_writes(writes, 764) == [[500], [600]]
+
+    # The 5 minute repeat sends the newest value.
+    await _fire(hass, clock, 270)
+    assert _bus_writes(writes, 764) == [[500], [600], [620]]
+
+    # Nothing is written, and nothing queued, while the connection is down.
+    patch_unit.connected = False
+    hass.states.async_set("sensor.co2", "900", attrs)
+    await _fire(hass, clock, 40)
+    assert _bus_writes(writes, 764) == [[500], [600], [620]]
+    patch_unit.connected = True
+    await _fire(hass, clock, 31)
+    assert _bus_writes(writes, 764) == [[500], [600], [620], [900]]
+
+    # A failed write is not queued; the next tick sends the newest value.
+    patch_unit.fail_write(764, MaicoConnectionError("x"))
+    hass.states.async_set("sensor.co2", "1000", attrs)
+    await _fire(hass, clock, 31)
+    hass.states.async_set("sensor.co2", "1100", attrs)
+    patch_unit._write_errors.clear()
+    await _fire(hass, clock, 31)
+    assert _bus_writes(writes, 764)[-1] == [1100]
 
 
-async def test_migration(hass: HomeAssistant, patch_unit: MockModbusUnit) -> None:
+async def test_migration(hass: HomeAssistant, patch_unit: FakeUnit) -> None:
     """0.1.x entries keep their entities under the new keys."""
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -266,7 +416,7 @@ async def test_migration(hass: HomeAssistant, patch_unit: MockModbusUnit) -> Non
 
 
 async def test_diagnostics(
-    hass: HomeAssistant, patch_unit: MockModbusUnit, config_entry: MockConfigEntry
+    hass: HomeAssistant, patch_unit: FakeUnit, config_entry: MockConfigEntry
 ) -> None:
     """Diagnostics carry the raw registers and redact the host."""
     await _setup(hass, config_entry)
@@ -277,7 +427,7 @@ async def test_diagnostics(
 
 
 async def test_all_entities_named(
-    hass: HomeAssistant, patch_unit: MockModbusUnit, config_entry: MockConfigEntry
+    hass: HomeAssistant, patch_unit: FakeUnit, config_entry: MockConfigEntry
 ) -> None:
     """Every entity gets a translated name (only the fan uses the device name)."""
     await _setup(hass, config_entry)
@@ -288,19 +438,18 @@ async def test_all_entities_named(
 
 
 async def test_busy_block_is_retried(
-    hass: HomeAssistant, patch_unit: MockModbusUnit, config_entry: MockConfigEntry
+    hass: HomeAssistant, patch_unit: FakeUnit, config_entry: MockConfigEntry
 ) -> None:
-    """A busy unit fails the poll but does not drop the block for good."""
+    """A busy unit fails the cycle but does not drop the block for good."""
     await _setup(hass, config_entry)
-    patch_unit.fail_read(650, ServerDeviceBusyError())
-    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=31))
-    await hass.async_block_till_done()
+    patch_unit.fail_read(650, busy())
+    for cycle in (1, 2, 3):
+        await _poll(hass, cycle)
     assert hass.states.get("sensor.maico_kwl_supply_fan_speed").state == STATE_UNAVAILABLE
     assert not config_entry.runtime_data.unsupported_blocks
 
     patch_unit.fail_read(650, None)
-    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=62))
-    await hass.async_block_till_done()
+    await _poll(hass, 4)
     assert hass.states.get("sensor.maico_kwl_supply_fan_speed").state == "1239"
 
 

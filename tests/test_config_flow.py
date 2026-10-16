@@ -3,36 +3,31 @@
 from __future__ import annotations
 
 from collections.abc import Generator
-from contextlib import asynccontextmanager
 from unittest.mock import patch
 
-from modbus_connection import ModbusConnectionError
-from modbus_connection.mock import MockModbusUnit
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.maico_kwl.client import MaicoConnectionError
 from custom_components.maico_kwl.const import CONF_SCAN_INTERVAL, CONF_SLAVE, DOMAIN
 from homeassistant import config_entries
 from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 
+from .conftest import FakeUnit
+
 USER_INPUT = {CONF_HOST: " 192.168.1.50 ", CONF_PORT: 502, CONF_SLAVE: 10}
 
 
 @pytest.fixture
-def patch_flow_unit(mock_unit: MockModbusUnit) -> Generator[MockModbusUnit]:
-    """Hand the mock unit to the config flow."""
-
-    @asynccontextmanager
-    async def _temporary(hass, params, unit_id):
-        yield mock_unit
-
-    with patch("custom_components.maico_kwl.config_flow.async_get_temporary_unit", _temporary):
+def patch_flow_unit(mock_unit: FakeUnit) -> Generator[FakeUnit]:
+    """Hand the fake unit to the config flow."""
+    with patch("custom_components.maico_kwl.config_flow.MaicoModbusClient", return_value=mock_unit):
         yield mock_unit
 
 
-async def test_user_flow(hass: HomeAssistant, patch_flow_unit: MockModbusUnit) -> None:
+async def test_user_flow(hass: HomeAssistant, patch_flow_unit: FakeUnit) -> None:
     """A Maico KWL is found and set up."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -49,12 +44,12 @@ async def test_user_flow(hass: HomeAssistant, patch_flow_unit: MockModbusUnit) -
 @pytest.mark.parametrize(
     ("setup", "error"),
     [
-        (lambda unit: unit.fail_requests(ModbusConnectionError("x")), "cannot_connect"),
+        (lambda unit: unit.fail_requests(MaicoConnectionError("x")), "cannot_connect"),
         (lambda unit: unit.holding.update({550: 42}), "not_maico"),
     ],
 )
 async def test_user_flow_errors(
-    hass: HomeAssistant, patch_flow_unit: MockModbusUnit, setup, error: str
+    hass: HomeAssistant, patch_flow_unit: FakeUnit, setup, error: str
 ) -> None:
     """Connection problems and foreign devices are reported."""
     setup(patch_flow_unit)
@@ -67,7 +62,7 @@ async def test_user_flow_errors(
 
 
 async def test_already_configured(
-    hass: HomeAssistant, patch_flow_unit: MockModbusUnit, config_entry: MockConfigEntry
+    hass: HomeAssistant, patch_flow_unit: FakeUnit, config_entry: MockConfigEntry
 ) -> None:
     """The same unit cannot be added twice."""
     config_entry.add_to_hass(hass)
@@ -81,8 +76,8 @@ async def test_already_configured(
 
 async def test_reconfigure(
     hass: HomeAssistant,
-    patch_flow_unit: MockModbusUnit,
-    patch_unit: MockModbusUnit,
+    patch_flow_unit: FakeUnit,
+    patch_unit: FakeUnit,
     config_entry: MockConfigEntry,
 ) -> None:
     """The connection can be changed."""
@@ -103,7 +98,7 @@ async def test_reconfigure(
 
 
 async def test_options(
-    hass: HomeAssistant, patch_unit: MockModbusUnit, config_entry: MockConfigEntry
+    hass: HomeAssistant, patch_unit: FakeUnit, config_entry: MockConfigEntry
 ) -> None:
     """Options set the interval and bus sources."""
     config_entry.add_to_hass(hass)
@@ -131,8 +126,8 @@ async def test_options(
 
 async def test_options_change_host(
     hass: HomeAssistant,
-    patch_flow_unit: MockModbusUnit,
-    patch_unit: MockModbusUnit,
+    patch_flow_unit: FakeUnit,
+    patch_unit: FakeUnit,
     config_entry: MockConfigEntry,
 ) -> None:
     """The host can be changed in the options; the options stay free of it."""
@@ -153,8 +148,8 @@ async def test_options_change_host(
 
 async def test_options_change_host_error(
     hass: HomeAssistant,
-    patch_flow_unit: MockModbusUnit,
-    patch_unit: MockModbusUnit,
+    patch_flow_unit: FakeUnit,
+    patch_unit: FakeUnit,
     config_entry: MockConfigEntry,
 ) -> None:
     """A host that cannot be reached is refused and the old one is kept."""
@@ -163,7 +158,7 @@ async def test_options_change_host_error(
     await hass.async_block_till_done()
     old_host = config_entry.data[CONF_HOST]
 
-    patch_flow_unit.fail_requests(ModbusConnectionError("x"))
+    patch_flow_unit.fail_requests(MaicoConnectionError("x"))
     result = await hass.config_entries.options.async_init(config_entry.entry_id)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {CONF_HOST: "192.168.1.99", CONF_SCAN_INTERVAL: 30}

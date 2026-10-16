@@ -5,16 +5,13 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from modbus_connection import ModbusTcpParams
-
-from homeassistant.components.modbus import async_get_unit
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PORT, Platform
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import ConfigEntryError, HomeAssistantError
 from homeassistant.helpers import entity_registry as er, issue_registry as ir
 
 from .bus import MaicoBusFeeder
+from .client import MaicoModbusClient
 from .const import CONF_SCAN_INTERVAL, CONF_SLAVE, DEFAULT_PORT, DEFAULT_SLAVE, DOMAIN
 from .coordinator import MaicoKWLConfigEntry, MaicoKWLCoordinator
 
@@ -93,25 +90,16 @@ LEGACY_KEYS: dict[str, str] = {
 }
 
 
-def create_modbus_params(data: dict[str, Any]) -> ModbusTcpParams:
-    """Connection parameters from config entry data."""
-    return ModbusTcpParams(host=data[CONF_HOST], port=data.get(CONF_PORT, DEFAULT_PORT))
-
-
 async def async_setup_entry(hass: HomeAssistant, entry: MaicoKWLConfigEntry) -> bool:
     """Set up a Maico KWL from a config entry."""
-    try:
-        unit = async_get_unit(
-            hass,
-            entry,
-            create_modbus_params(dict(entry.data)),
-            entry.data.get(CONF_SLAVE, DEFAULT_SLAVE),
-        )
-    except HomeAssistantError as err:
-        # Another integration holds the same device with other link settings.
-        raise ConfigEntryError(str(err)) from err
+    client = MaicoModbusClient(
+        entry.data[CONF_HOST],
+        entry.data.get(CONF_PORT, DEFAULT_PORT),
+        entry.data.get(CONF_SLAVE, DEFAULT_SLAVE),
+    )
+    entry.async_on_unload(client.async_close)
 
-    coordinator = MaicoKWLCoordinator(hass, entry, unit)
+    coordinator = MaicoKWLCoordinator(hass, entry, client)
     await coordinator.async_config_entry_first_refresh()
     coordinator.bus = MaicoBusFeeder(hass, entry, coordinator)
     entry.runtime_data = coordinator
@@ -124,7 +112,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaicoKWLConfigEntry) -> 
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: MaicoKWLConfigEntry) -> bool:
-    """Unload a config entry; the Modbus hold is released by async_on_unload."""
+    """Unload a config entry; the connection is closed by async_on_unload."""
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 

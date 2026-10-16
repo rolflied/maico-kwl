@@ -214,6 +214,36 @@ READ_BLOCKS: tuple[tuple[int, int], ...] = (
     (900, 1),  # filter monitoring
 )
 
+# Modbus allows 125 registers per read. Neighbouring blocks are fetched in one
+# request when the gap between them is small: fewer round trips to a slow unit.
+MAX_READ_REGISTERS = 125
+MAX_READ_GAP = 50
+
+
+def group_blocks(
+    blocks: tuple[tuple[int, int], ...] = READ_BLOCKS,
+) -> tuple[tuple[tuple[int, int], tuple[tuple[int, int], ...]], ...]:
+    """Merge blocks into few requests: ((start, count), (blocks inside it)).
+
+    The gaps between blocks are read too and thrown away. If the unit rejects
+    a merged request, the caller falls back to the blocks inside it.
+    """
+    groups: list[list[tuple[int, int]]] = []
+    for block in sorted(blocks):
+        if groups:
+            first = groups[-1][0]
+            last = groups[-1][-1]
+            gap = block[0] - (last[0] + last[1])
+            span = block[0] + block[1] - first[0]
+            if gap <= MAX_READ_GAP and span <= MAX_READ_REGISTERS:
+                groups[-1].append(block)
+                continue
+        groups.append([block])
+    return tuple(((g[0][0], g[-1][0] + g[-1][1] - g[0][0]), tuple(g)) for g in groups)
+
+
+READ_GROUPS = group_blocks()
+
 # Registers with the values every Maico KWL reports. A device that answers
 # with other values is not taken for a Maico KWL, so nothing is written to it.
 IDENTITY_RANGES: dict[int, tuple[int, int]] = {
@@ -228,6 +258,7 @@ IDENTITY_RANGES: dict[int, tuple[int, int]] = {
 # Bus inputs must be written again at least every 10 minutes, or the unit
 # falls back to its own sensors.
 BUS_REFRESH_SECONDS = 300
+BUS_MIN_WRITE_INTERVAL_SECONDS = 30
 
 
 @dataclass(frozen=True, slots=True)
