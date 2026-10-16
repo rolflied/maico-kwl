@@ -138,7 +138,7 @@ Copy `custom_components/maico_kwl/` into `<config>/custom_components/` and resta
 address. Setup reads a few registers and refuses devices whose values do not match a Maico KWL.
 
 - **Reconfigure** (menu of the entry) changes host, port and Modbus address.
-- **Configure** sets the update interval (5–300 s, default 30 s) and the bus input sources.
+- **Configure** changes the host/IP address (the unit is tested first), the update interval (5–300 s, default 30 s) and sets the bus input sources.
 
 ---
 

@@ -114,7 +114,11 @@ async def test_options(
     assert result["type"] is FlowResultType.FORM
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
-        {CONF_SCAN_INTERVAL: 15, "bus_humidity_entity": "sensor.bath_humidity"},
+        {
+            CONF_HOST: config_entry.data[CONF_HOST],
+            CONF_SCAN_INTERVAL: 15,
+            "bus_humidity_entity": "sensor.bath_humidity",
+        },
     )
     await hass.async_block_till_done()
     assert result["type"] is FlowResultType.CREATE_ENTRY
@@ -123,3 +127,47 @@ async def test_options(
         "bus_humidity_entity": "sensor.bath_humidity",
     }
     assert config_entry.runtime_data.update_interval.total_seconds() == 15
+
+
+async def test_options_change_host(
+    hass: HomeAssistant,
+    patch_flow_unit: MockModbusUnit,
+    patch_unit: MockModbusUnit,
+    config_entry: MockConfigEntry,
+) -> None:
+    """The host can be changed in the options; the options stay free of it."""
+    config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    result = await hass.config_entries.options.async_init(config_entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_HOST: " 192.168.1.60 ", CONF_SCAN_INTERVAL: 30}
+    )
+    await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert config_entry.data[CONF_HOST] == "192.168.1.60"
+    assert config_entry.unique_id == "192.168.1.60_502_10"
+    assert CONF_HOST not in config_entry.options
+
+
+async def test_options_change_host_error(
+    hass: HomeAssistant,
+    patch_flow_unit: MockModbusUnit,
+    patch_unit: MockModbusUnit,
+    config_entry: MockConfigEntry,
+) -> None:
+    """A host that cannot be reached is refused and the old one is kept."""
+    config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+    old_host = config_entry.data[CONF_HOST]
+
+    patch_flow_unit.fail_requests(ModbusConnectionError("x"))
+    result = await hass.config_entries.options.async_init(config_entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_HOST: "192.168.1.99", CONF_SCAN_INTERVAL: 30}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "cannot_connect"}
+    assert config_entry.data[CONF_HOST] == old_host

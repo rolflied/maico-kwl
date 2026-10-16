@@ -172,15 +172,25 @@ def _source(device_class: SensorDeviceClass) -> EntitySelector:
 
 
 class MaicoKWLOptionsFlow(OptionsFlowWithReload):
-    """Polling interval and the sources of the bus inputs."""
+    """Host, polling interval and the sources of the bus inputs."""
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Show the options."""
+        entry = self.config_entry
+        errors: dict[str, str] = {}
         if user_input is not None:
-            return self.async_create_entry(data=user_input)
+            options = {k: v for k, v in user_input.items() if k != CONF_HOST}
+            host = user_input[CONF_HOST].strip().lower()
+            if host == entry.data[CONF_HOST]:
+                return self.async_create_entry(data=options)
+            if error := await self._async_change_host(host):
+                errors["base"] = error
+            else:
+                return self.async_create_entry(data=options)
 
         schema = vol.Schema(
             {
+                vol.Required(CONF_HOST): TextSelector(),
                 vol.Required(CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL): _box(5, 300, "s"),
                 vol.Optional(CONF_BUS_TEMPERATURE_ENTITY): _source(SensorDeviceClass.TEMPERATURE),
                 vol.Optional(CONF_BUS_HUMIDITY_ENTITY): _source(SensorDeviceClass.HUMIDITY),
@@ -189,5 +199,31 @@ class MaicoKWLOptionsFlow(OptionsFlowWithReload):
         )
         return self.async_show_form(
             step_id="init",
-            data_schema=self.add_suggested_values_to_schema(schema, self.config_entry.options),
+            data_schema=self.add_suggested_values_to_schema(
+                schema, {CONF_HOST: entry.data[CONF_HOST], **(user_input or entry.options)}
+            ),
+            errors=errors,
         )
+
+    async def _async_change_host(self, host: str) -> str | None:
+        """Test the new host and store it; return an error key or None."""
+        entry = self.config_entry
+        data = {**entry.data, CONF_HOST: host}
+        port = data.get(CONF_PORT, DEFAULT_PORT)
+        slave = data.get(CONF_SLAVE, DEFAULT_SLAVE)
+        unique_id = f"{host}_{port}_{slave}"
+        for other in self.hass.config_entries.async_entries(DOMAIN):
+            if other.entry_id != entry.entry_id and other.unique_id == unique_id:
+                return "already_configured"
+        # The unit takes one TCP connection only: free it before testing.
+        was_loaded = entry.state is ConfigEntryState.LOADED
+        if was_loaded and not await self.hass.config_entries.async_unload(entry.entry_id):
+            return "unknown"
+        if (error := await validate_connection(self.hass, data)) is not None:
+            if was_loaded:
+                await self.hass.config_entries.async_setup(entry.entry_id)
+            return error
+        self.hass.config_entries.async_update_entry(
+            entry, data=data, unique_id=unique_id, title=f"{DEFAULT_NAME} ({host})"
+        )
+        return None

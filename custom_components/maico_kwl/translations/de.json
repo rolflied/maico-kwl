@@ -44,18 +44,26 @@
       "init": {
         "title": "Maico KWL Optionen",
         "data": {
+          "host": "Host",
           "scan_interval": "Aktualisierungsintervall",
           "bus_temperature_entity": "Quelle Raumtemperatur für Bus-Eingang",
           "bus_humidity_entity": "Quelle relative Feuchte für Bus-Eingang",
           "bus_air_quality_entity": "Quelle CO₂ für Bus-Eingang"
         },
         "data_description": {
+          "host": "IP-Adresse oder Hostname der Lüftungsanlage. Die Anlage wird vor dem Speichern getestet.",
           "scan_interval": "Wie oft das Gerät abgefragt wird.",
           "bus_temperature_entity": "Wird bei jeder Änderung und mindestens alle 5 Minuten an Register 707 gesendet. Das Gerät nutzt den Wert nur bei Raumtemperatur-Quelle *Bus*.",
           "bus_humidity_entity": "Wird bei jeder Änderung und mindestens alle 5 Minuten an Register 763 gesendet.",
           "bus_air_quality_entity": "Wird bei jeder Änderung und mindestens alle 5 Minuten an Register 764 (ppm) gesendet."
         }
       }
+    },
+    "error": {
+      "cannot_connect": "Keine Verbindung zum Gerät. Host, Port und Modbus-Adresse prüfen, und ob ein anderes Programm die einzige Modbus-TCP-Verbindung belegt.",
+      "not_maico": "Das Gerät antwortet, aber seine Werte passen nicht zu einer Maico KWL. Adresse prüfen.",
+      "unknown": "Unerwarteter Fehler, siehe Protokoll.",
+      "already_configured": "Diese Lüftungsanlage ist bereits eingerichtet."
     }
   },
   "entity": {
